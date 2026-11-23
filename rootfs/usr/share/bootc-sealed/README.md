@@ -21,12 +21,23 @@ only once (`/var/lib/initial-firstboot/complete`).
 On the installed system, as root:
 
 ```bash
-systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11 /dev/nvme0n1p2
+# Recommended daily unlock: PIN + TPM2 (PCR 7+11+14)
+#   7 = Secure Boot policy, 11 = UKI, 14 = MOK
+systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
+
+# TPM2 without PIN (convenience; less recommended)
+systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
+
+# FIDO2 with PIN
 systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes /dev/nvme0n1p2
-systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes --tpm2-pcrs=7+11 /dev/nvme0n1p2
 ```
 
 Keep the original passphrase keyslot as a recovery method.
+
+PCR 14 covers MOK changes (Evil Maid with a MOK-enrolled key). The public-key
+policy (`--tpm2-public-key`) can reduce re-enrollment on image updates, but
+requires a `.pcrsig` in the UKI; see the repository README section 6.5.
 
 ## GitHub Actions runner
 

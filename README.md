@@ -466,33 +466,180 @@ sudo homectl create <user> --storage=luks --member-of=wheel --shell=/bin/bash
 ## 6. LUKS FDE: TPM2 / FIDO2 / PIN
 
 インストール後のシステムで root として実行します。元のパスフレーズ
-keyslot は残るため、TPM2 / FIDO2 が使えない場合の復旧手段になります。
+keyslot は残るため、TPM2 / FIDO2 / PIN が使えない場合の復旧手段になります。
+
+### 6.1 PCR 7 / 11 / 14 と Evil Maid
+
+TPM2 の封印先 PCR は、次の 3 つを基本にします。
+
+| PCR | 測定対象 | 変わるタイミング |
+| --- | --- | --- |
+| 7 | Secure Boot policy（PK/KEK/db/dbx） | Secure Boot の有効/無効、db/dbx 更新、ファームウェア証明書変更 |
+| 11 | systemd-stub が測定する UKI（kernel + initramfs + cmdline） | UKI / カーネル / initramfs の更新 |
+| 14 | shim が測定する MOK 証明書・ハッシュ | MOK の追加・削除、MOK 鍵の変更 |
+
+PCR 7+11 だけでは、UKI を攻撃者の鍵で差し替えて **MOK に攻撃者の公開鍵を
+登録する** Evil Maid 攻撃を検出できません。MOK は PCR 7 の Secure Boot
+ポリシー（PK/KEK/db/dbx）とは別で、PCR 14 に測定されるためです。
+PCR 14 を加えることで、MOK の変更も TPM の封印条件に含められます。
+systemd のドキュメントでも、shim/MOK を使う場合は PCR 7, 11, 14 の
+組み合わせが推奨されています。
+
+### 6.2 推奨: PIN + TPM2（PCR 7+11+14）
+
+日常のアンロックは **PIN + TPM2** を推奨します。systemd 262 の
+`--tpm2-with-pin=yes` は PIN を Argon2id で hardening するため、TPM 単体が
+侵害されても PIN なしではボリューム鍵を取り出せません。
 
 ```bash
-# デバイス確認
+# デバイス確認（TPM2 / FIDO2）
 lsblk
 sudo systemd-cryptenroll --tpm2-device=list
 sudo systemd-cryptenroll --fido2-device=list
 
-# TPM2（PCR 7 = Secure Boot 状態、PCR 11 = UKI 測定値）
-sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11 /dev/nvme0n1p2
-
-# FIDO2 + PIN
-sudo systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes /dev/nvme0n1p2
-
-# TPM2 + PIN
-sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes --tpm2-pcrs=7+11 /dev/nvme0n1p2
+# 推奨: PIN + TPM2 (PCR 7+11+14)
+sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
 ```
 
-- UKI は `ukify --measure` でビルドしているため PCR 11 が利用できます。
-- イメージ更新で UKI が変わると PCR 11 の値も変わります。更新後に
-  自動解錠できなくなった場合は、パスフレーズで起動して再 enroll するか、
-  PCR 7 のみにしてください。
+- PIN は数字に限らず任意の文字列です。誤入力は TPM の dictionary attack
+  lockout を進めるため、取扱いに注意してください。
+- `--tpm2-with-pin=direct` は PBKDF2 互換の旧方式です。Argon2id の
+  `yes` を推奨します（systemd 262 以降）。
+- TPM2 を使わない場合の復旧用に、パスフレーズ keyslot は必ず残してください。
+
+### 6.3 TPM2 のみ（利便性優先・非推奨）
+
+PIN を毎回入力したくない場合の簡易設定です。TPM 単体を侵害された場合の
+防御は弱くなるため、日常用途では 6.2 の PIN + TPM を推奨します。
+
+```bash
+sudo systemd-cryptenroll --tpm2-device=auto \
+  --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
+```
+
+### 6.4 FIDO2 + PIN
+
+```bash
+sudo systemd-cryptenroll --fido2-device=auto \
+  --fido2-with-client-pin=yes /dev/nvme0n1p2
+```
+
+### 6.5 公開鍵ポリシーによる再登録の削減（上級者向け）
+
+`systemd-cryptenroll --tpm2-public-key=` を使うと、PCR 11 の現在値ではなく
+**UKI の PCR 署名を検証するポリシー**にできます。同じ公開鍵で署名された
+UKI であれば、イメージ更新後も TPM2 の再登録なしで解錠できます。
+
+```bash
+# UKI 署名証明書から公開鍵を取り出す
+openssl x509 -in secureboot.crt -pubkey -noout > secureboot.pub.pem
+
+sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+14 \
+  --tpm2-public-key=secureboot.pub.pem \
+  --tpm2-public-key-pcrs=11 \
+  /dev/nvme0n1p2
+```
+
+- `--tpm2-pcrs=7+14` は Secure Boot と MOK の現在値に固定します。
+- `--tpm2-public-key-pcrs=11` は PCR 11 を **署名検証** に使います
+  （デフォルトも 11 です）。実効的な PCR は 7+11+14 です。
+- `--tpm2-public-key=` は PEM の RSA 公開鍵を受け取ります。証明書をそのまま
+  渡すのではなく、上記のように公開鍵を取り出してください。
+- これは UKI に **PCR 署名（`.pcrsig`）** と公開鍵（`.pcrpkey`）が
+  埋め込まれている場合に機能します。`--tpm2-signature=` で現在の PCR に
+  対する署名 JSON を渡すと、enroll 時の安全確認も行えます。
+- 公開鍵ポリシーでも、MOK の変更（PCR 14）、Secure Boot の変更（PCR 7）、
+  署名鍵のローテーションでは再登録が必要です。UKI の更新だけなら
+  再登録不要です。
+
+> **現状のイメージについて**: このリポジトリの現行 `scripts/build-uki.sh` は
+> `.pcrsig` を埋め込んでいないため、上記の公開鍵ポリシーをそのまま使うことは
+> できません。まずは 6.2 の固定 PCR 7+11+14 + PIN を使ってください。公開鍵
+> ポリシーを有効にするには、下記のオフライン署名をビルドに追加します。
+
+#### 6.5.1 ビルド時に `.pcrsig` を埋め込む（オフライン署名）
+
+ビルド環境に TPM がない場合は、`ukify --policy-digest` でポリシーダイジェストを
+出力し、`openssl` でオフライン署名してから `.pcrsig` を UKI に添付します。
+
+```bash
+# 1. ポリシーダイジェストを JSON で出力（TPM 不要）
+ukify build \
+  --linux="/kernel/${kver}/vmlinuz" \
+  --initrd="/kernel/${kver}/initramfs.img" \
+  --uname="${kver}" \
+  --cmdline=@/tmp/cmdline \
+  --os-release=@/target/usr/lib/os-release \
+  --pcr-certificate=/run/secrets/secureboot_cert \
+  --pcr-banks=sha256 \
+  --policy-digest --json=short \
+  --output=/tmp/base.efi > /tmp/base.pcrs
+
+# 2. PCR ポリシーの tbs を秘密鍵で署名し、sig を base64 で埋める
+python3 - /tmp/base.pcrs /run/secrets/secureboot_key /tmp/signed.pcrs <<'PY'
+import base64, json, subprocess, sys
+base = json.load(open(sys.argv[1]))
+for _bank, policies in base.items():
+    for policy in policies:
+        tbs = bytes.fromhex(policy["tbs"])
+        sig = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", sys.argv[2]],
+            input=tbs, capture_output=True, check=True,
+        ).stdout
+        policy["sig"] = base64.b64encode(sig).decode()
+json.dump(base, open(sys.argv[3], "w"))
+PY
+
+# 3. 署名済みポリシーを UKI に添付し、Secure Boot 用に sbsign
+ukify build \
+  --join-pcrsig=/tmp/base.efi \
+  --pcrsig=@/tmp/signed.pcrs \
+  --output=/tmp/final.efi
+sbsign --key /run/secrets/secureboot_key \
+  --cert /run/secrets/secureboot_cert \
+  /tmp/final.efi --output /out/${kver}.efi
+```
+
+- `--pcr-certificate=` は `.pcrpkey`（公開鍵）を UKI に埋め込みます。
+- 署名は UKI 署名と同じ鍵（`secureboot.key`）で行えます。
+- 生成した UKI を `ukify inspect` で確認し、`.pcrsig` と `.pcrpkey` が
+  含まれていることを確認してください。
+- `.pcrsig` の署名は PCR 11 の測定値に対するものです。UKI を更新したら
+  新しい `.pcrsig` を生成して同じ鍵で署名します。TPM の再登録は不要です。
+- この手順を `scripts/build-uki.sh` に組み込むと、CI でビルドしたイメージでも
+  公開鍵ポリシーを利用できます。
+
+### 6.6 イメージ更新後の再登録
+
+固定 PCR 7+11+14 の場合、UKI 更新で PCR 11 が変わるため、更新後に一度
+再登録します。パスフレーズで起動してから、既存の TPM2 slot を消して
+新しい slot を作ります。
+
+```bash
+sudo systemd-cryptenroll --wipe-slot=tpm2 \
+  --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
+```
+
+- `--wipe-slot=tpm2` は新しい slot の作成が成功した後に古い TPM2 slot を
+  消します。パスフレーズ slot は消えません。
+- PCR 7 のみに落とすと UKI/MOK の検証が失われるため、避けてください。
+- MOK の追加・削除、Secure Boot の有効/無効、ファームウェアの db/dbx 更新、
+  UKI 署名鍵の変更があった場合も再登録が必要です。
+- 公開鍵ポリシー（6.5）を使っている場合、同じ鍵で署名された UKI の更新では
+  再登録不要です。鍵をローテーションした場合は再登録してください。
+
+### 6.7 initramfs / 自動解錠
+
 - initramfs には `systemd-cryptsetup`, `fido2`, `tpm2-tss`, `crypt`,
   `plymouth` が入っており、`systemd-cryptenroll` が作った LUKS2 token を
   `systemd-cryptsetup` が読みます。
 - 解錠は `systemd-gpt-auto-generator` が行います。root パーティションは
   Discoverable Partitions の root GPT type である必要があります。
+- PIN + TPM の入力は initramfs の console keymap を使います。US 以外の
+  配列はビルド時の `VCONSOLE_KEYMAP` で設定してください。
 
 ## 7. GitHub Actions self-hosted runner
 
@@ -656,8 +803,17 @@ systemd-cryptenroll --fido2-device=list
 journalctl -b | grep -i crypt
 ```
 
-TPM2 の PCR が更新で変わった場合は再 enroll してください。FIDO2 の PIN
-入力には initramfs の keymap が使われます。
+TPM2 の PCR 7/11/14 が更新で変わった場合は再登録してください。
+
+- UKI 更新: PCR 11。固定 PCR 7+11+14 の場合は再登録が必要です。公開鍵
+  ポリシー（6.5）なら同じ鍵で署名された UKI は再登録不要です。
+- MOK の追加・削除: PCR 14。再登録が必要です。
+- Secure Boot の有効/無効、db/dbx 更新: PCR 7。再登録が必要です。
+- 再登録はパスフレーズで起動し、`--wipe-slot=tpm2` を付けて新しい slot を
+  作成します（6.6 参照）。PCR 7 のみに落とすと UKI/MOK の検証が失われる
+  ため避けてください。
+
+FIDO2 の PIN 入力には initramfs の keymap が使われます。
 
 ### 初回 TUI が出ない
 

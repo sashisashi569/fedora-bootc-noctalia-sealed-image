@@ -224,14 +224,19 @@ Next steps:
   2. At the first-boot TUI, create your user and set hostname/timezone.
   3. Enroll LUKS unlock methods (run as root on the installed system):
 
-       # TPM2 (PCR 7 = Secure Boot state, PCR 11 = UKI measurement)
-       systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11 ${root}
+       # Recommended daily unlock: PIN + TPM2 (PCR 7+11+14)
+       #   7 = Secure Boot policy, 11 = UKI measurement, 14 = MOK
+       systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+           --tpm2-pcrs=7+11+14 ${root}
+
+       # TPM2 without PIN (convenience; less recommended)
+       systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11+14 ${root}
 
        # FIDO2 with PIN
        systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes ${root}
 
-       # TPM2 + PIN
-       systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes --tpm2-pcrs=7+11 ${root}
+       # Public-key policy (advanced; requires a .pcrsig in the UKI)
+       #   See README section 6.5. The fixed PCR 7+11+14 is the default.
 
   The passphrase keyslot remains as a recovery method.
 EOF
