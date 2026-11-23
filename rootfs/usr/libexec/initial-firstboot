@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Minimal TUI first-boot setup for the sealed Noctalia desktop image.
+#
+# Runs once on a dedicated VT (tty2) before greetd. Configures hostname,
+# timezone, locale, keyboard and creates the first human user (classic
+# /etc/passwd account with a wheel membership). systemd-homed is enabled
+# system-wide and can be used afterwards with `homectl create`.
+# tty1 is left to the kernel/systemd console so boot messages cannot scroll
+# the TUI away.
+set -euo pipefail
+
+STATE_DIR=/var/lib/initial-firstboot
+MARKER="${STATE_DIR}/complete"
+DIALOG=/usr/bin/dialog
+BACKTITLE="Fedora bootc | Noctalia sealed image"
+
+if [[ ! -x "${DIALOG}" ]]; then
+    echo "dialog is not installed; cannot run initial-firstboot" >&2
+    exit 1
+fi
+
+if [[ -e "${MARKER}" ]]; then
+    exit 0
+fi
+
+# The systemd unit switches to tty2 and supplies it on stdin/stdout/stderr;
+# make it explicit in case the script is started manually.
+exec </dev/tty2 >/dev/tty2 2>&1
+if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then
+    export TERM=linux
+fi
+
+log() {
+    logger -t initial-firstboot -- "$*" 2>/dev/null || true
+}
+
+die() {
+    "${DIALOG}" --backtitle "${BACKTITLE}" --title "Error" \
+        --msgbox "$*" 10 70 || true
+    exit 1
+}
+
+inputbox() {
+    local prompt=$1 default=${2-} value
+    value=$("${DIALOG}" --backtitle "${BACKTITLE}" --stdout \
+        --inputbox "${prompt}" 10 70 "${default}") || exit 1
+    printf '%s' "${value}"
+}
+
+passwordbox() {
+    local prompt=$1 value
+    value=$("${DIALOG}" --backtitle "${BACKTITLE}" --stdout --insecure \
+        --passwordbox "${prompt}" 10 70) || exit 1
+    printf '%s' "${value}"
+}
+
+menu() {
+    local prompt=$1 height=$2 width=$3 list_height=$4 default=$5
+    shift 5
+    "${DIALOG}" --backtitle "${BACKTITLE}" --stdout \
+        --default-item "${default}" --menu "${prompt}" \
+        "${height}" "${width}" "${list_height}" "$@" || exit 1
+}
+
+human_users() {
+    getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 { print $1 }'
+}
+
+valid_hostname() {
+    local h=$1
+    [[ ${#h} -ge 1 && ${#h} -le 64 ]] || return 1
+    [[ "${h}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || return 1
+    [[ "${h}" != *..* ]] || return 1
+    return 0
+}
+
+valid_username() {
+    local u=$1
+    [[ "${u}" =~ ^[a-z_][a-z0-9_-]*$ ]] || return 1
+    [[ ${#u} -le 32 ]] || return 1
+    ! getent passwd "${u}" >/dev/null
+}
+
+log "starting initial-firstboot"
+
+"${DIALOG}" --backtitle "${BACKTITLE}" --title "Welcome" --msgbox \
+"This is the first boot of your Fedora bootc / Noctalia system.
+
+The wizard will configure:
+  - hostname
+  - timezone and locale
+  - console/keyboard layout
+  - your administrator user
+
+Noctalia Greeter and the Umbriel session start after this setup." 16 74
+
+# ---------------------------------------------------------------------------
+# Hostname
+# ---------------------------------------------------------------------------
+hostname=$(hostname 2>/dev/null || echo fedora)
+while :; do
+    hostname=$(inputbox "Hostname" "${hostname}")
+    valid_hostname "${hostname}" && break
+    "${DIALOG}" --backtitle "${BACKTITLE}" --title "Invalid hostname" \
+        --msgbox "Use letters, digits, '-' and '.', starting with a letter or digit." 8 70 || true
+done
+
+# ---------------------------------------------------------------------------
+# Timezone
+# ---------------------------------------------------------------------------
+tz_choice=$(menu "Timezone" 22 70 12 "UTC" \
+    "UTC" "Coordinated Universal Time" \
+    "Asia/Tokyo" "Japan" \
+    "Asia/Seoul" "Korea" \
+    "Asia/Shanghai" "China" \
+    "Europe/London" "United Kingdom" \
+    "Europe/Berlin" "Central Europe" \
+    "America/New_York" "US Eastern" \
+    "America/Chicago" "US Central" \
+    "America/Denver" "US Mountain" \
+    "America/Los_Angeles" "US Pacific" \
+    "Other" "Enter a timezone manually")
+
+if [[ "${tz_choice}" == "Other" ]]; then
+    while :; do
+        timezone=$(inputbox "Timezone (for example Asia/Tokyo)" "UTC")
+        if timedatectl list-timezones | grep -Fxq -- "${timezone}"; then
+            break
+        fi
+        "${DIALOG}" --backtitle "${BACKTITLE}" --title "Invalid timezone" \
+            --msgbox "Use a name from 'timedatectl list-timezones'." 8 70 || true
+    done
+else
+    timezone=${tz_choice}
+fi
+
+# ---------------------------------------------------------------------------
+# Locale
+# ---------------------------------------------------------------------------
+locale_choice=$(menu "Locale" 20 70 8 "en_US.UTF-8" \
+    "en_US.UTF-8" "English (United States)" \
+    "ja_JP.UTF-8" "Japanese" \
+    "C.UTF-8" "C / UTF-8" \
+    "Other" "Enter a locale manually")
+
+if [[ "${locale_choice}" == "Other" ]]; then
+    while :; do
+        locale=$(inputbox "Locale (for example en_GB.UTF-8)" "en_US.UTF-8")
+        if localectl list-locales | grep -Fxq -- "${locale}"; then
+            break
+        fi
+        "${DIALOG}" --backtitle "${BACKTITLE}" --title "Invalid locale" \
+            --msgbox "Use a name from 'localectl list-locales'." 8 70 || true
+    done
+else
+    locale=${locale_choice}
+fi
+
+# ---------------------------------------------------------------------------
+# Keyboard
+# ---------------------------------------------------------------------------
+keymap_choice=$(menu "Console keyboard layout" 20 70 8 "us" \
+    "us" "US English" \
+    "jp106" "Japanese (106 keys)" \
+    "de" "German" \
+    "fr" "French" \
+    "uk" "United Kingdom" \
+    "Other" "Enter a keymap manually")
+
+if [[ "${keymap_choice}" == "Other" ]]; then
+    while :; do
+        keymap=$(inputbox "Console keymap (for example us)" "us")
+        if localectl list-keymaps | grep -Fxq -- "${keymap}"; then
+            break
+        fi
+        "${DIALOG}" --backtitle "${BACKTITLE}" --title "Invalid keymap" \
+            --msgbox "Use a name from 'localectl list-keymaps'." 8 70 || true
+    done
+else
+    keymap=${keymap_choice}
+fi
+
+case "${keymap}" in
+    jp106) x11_layout=jp ;;
+    *) x11_layout=${keymap} ;;
+esac
+
+# ---------------------------------------------------------------------------
+# First human user
+# ---------------------------------------------------------------------------
+existing_users=$(human_users || true)
+if [[ -n "${existing_users}" ]]; then
+    username=$(printf '%s\n' "${existing_users}" | head -n1)
+    "${DIALOG}" --backtitle "${BACKTITLE}" --title "User account" --msgbox \
+        "A user account already exists (${username}); the wizard will not create another one." 8 70
+    create_user=0
+else
+    create_user=1
+    while :; do
+        username=$(inputbox "Username for the administrator account" "user")
+        valid_username "${username}" && break
+        "${DIALOG}" --backtitle "${BACKTITLE}" --title "Invalid username" \
+            --msgbox "Use lowercase letters, digits, '_' and '-'; the name must not exist yet." 8 70 || true
+    done
+
+    fullname=$(inputbox "Full name (optional)" "")
+    while :; do
+        password1=$(passwordbox "Password for ${username}")
+        if [[ ${#password1} -lt 8 ]]; then
+            "${DIALOG}" --backtitle "${BACKTITLE}" --title "Password too short" \
+                --msgbox "Use at least 8 characters." 8 70 || true
+            continue
+        fi
+        password2=$(passwordbox "Repeat the password")
+        if [[ "${password1}" == "${password2}" ]]; then
+            break
+        fi
+        "${DIALOG}" --backtitle "${BACKTITLE}" --title "Password mismatch" \
+            --msgbox "The passwords do not match." 8 70 || true
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Confirm
+# ---------------------------------------------------------------------------
+summary="Hostname:  ${hostname}
+Timezone:  ${timezone}
+Locale:    ${locale}
+Keyboard:  ${keymap} (X11: ${x11_layout})"
+
+if [[ ${create_user} -eq 1 ]]; then
+    summary+=$'\n'"User:      ${username} (wheel)"
+else
+    summary+=$'\n'"User:      ${username} (existing)"
+fi
+
+"${DIALOG}" --backtitle "${BACKTITLE}" --title "Apply configuration" \
+    --yesno "${summary}
+
+Apply these settings now?" 16 74 || die "Setup cancelled."
+
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
+log "applying hostname=${hostname} timezone=${timezone} locale=${locale} keymap=${keymap}"
+
+hostnamectl set-hostname "${hostname}"
+
+if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1 ${hostname}/" /etc/hosts
+else
+    printf '127.0.1.1 %s\n' "${hostname}" >>/etc/hosts
+fi
+
+timedatectl set-timezone "${timezone}"
+localectl set-locale "LANG=${locale}"
+localectl set-keymap "${keymap}"
+localectl set-x11-keymap "${x11_layout}"
+
+if [[ ${create_user} -eq 1 ]]; then
+    useradd --create-home --groups wheel --shell /bin/bash \
+        --comment "${fullname}" "${username}"
+    printf '%s:%s\n' "${username}" "${password1}" | chpasswd
+    unset password1 password2
+fi
+
+systemctl set-default graphical.target
+
+mkdir -p "${STATE_DIR}"
+date -u '+%Y-%m-%dT%H:%M:%SZ' >"${MARKER}"
+
+log "initial-firstboot completed"
+
+if "${DIALOG}" --backtitle "${BACKTITLE}" --title "Setup complete" \
+    --yesno "Setup is complete.
+
+Reboot now to start Noctalia Greeter?" 10 70; then
+    systemctl reboot
+else
+    "${DIALOG}" --backtitle "${BACKTITLE}" --title "Setup complete" \
+        --msgbox "Reboot later with 'systemctl reboot'. greetd starts automatically on the next boot." 10 74
+    # Leave the user on the normal console/greeter VT after the TUI exits.
+    /usr/sbin/chvt 1 2>/dev/null || true
+fi

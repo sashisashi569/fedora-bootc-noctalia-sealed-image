@@ -1,0 +1,2 @@
+# Extra kernel arguments embedded into the sealed UKI.
+kargs = ["rw", "quiet", "rhgb", "loglevel=3", "systemd.show_status=0"]

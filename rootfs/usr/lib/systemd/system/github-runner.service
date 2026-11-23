@@ -1,0 +1,20 @@
+[Unit]
+Description=GitHub Actions self-hosted runner
+Documentation=https://docs.github.com/actions/hosting-your-own-runners
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/home/github-runner/actions-runner/.runner
+
+[Service]
+Type=simple
+User=github-runner
+Group=github-runner
+Environment=HOME=/var/home/github-runner
+WorkingDirectory=-/var/home/github-runner/actions-runner
+ExecStart=/var/home/github-runner/actions-runner/run.sh
+Restart=always
+RestartSec=10
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Keep the systemd-boot binary used as shim's second stage in sync with the
+# systemd-boot binary updated by systemd-boot-update.service.
+#
+# On a shim-based install the ESP contains:
+#   /EFI/fedora/shimx64.efi   (Microsoft/Fedora-signed shim)
+#   /EFI/fedora/grubx64.efi   (Fedora-signed systemd-boot; shim's hardcoded name)
+#   /EFI/BOOT/BOOTX64.EFI     (shim fallback)
+#   /EFI/BOOT/grubx64.efi     (systemd-boot for the fallback path)
+#
+# A non-shim install only has the normal systemd-boot paths, so this script
+# does nothing unless the shim copies already exist.
+set -euo pipefail
+
+src=/boot/EFI/systemd/systemd-bootx64.efi
+[[ -f "${src}" ]] || exit 0
+
+for dst in \
+    /boot/EFI/fedora/grubx64.efi \
+    /boot/EFI/BOOT/grubx64.efi; do
+    [[ -f "${dst}" ]] || continue
+    if ! cmp -s "${src}" "${dst}"; then
+        install -m 0644 "${src}" "${dst}"
+    fi
+done

@@ -1,0 +1,9 @@
+keys/*
+!keys/.gitkeep
+.local-registry/
+*.qcow2
+*.raw
+*.efi
+*.tar
+*.ociarchive
+out/

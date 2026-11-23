@@ -1,0 +1,12 @@
+.git
+.github
+keys
+.local-registry
+out/
+*.qcow2
+*.raw
+*.efi
+*.tar
+*.ociarchive
+README.md
+Makefile

@@ -1,0 +1,16 @@
+[Unit]
+Description=Initialize Noctalia Greeter state
+Documentation=https://docs.noctalia.dev/greeter/installation/
+ConditionPathExists=/usr/share/noctalia-greeter/setup_greeter_system.sh
+ConditionPathExists=!/var/lib/noctalia-greeter/greeter.toml
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+Environment=GREETER_USER=greetd
+ExecStart=/usr/share/noctalia-greeter/setup_greeter_system.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=Initial first boot setup (TUI)
+Documentation=file:///usr/share/bootc-sealed/README.md
+ConditionVirtualization=!container
+ConditionPathExists=/dev/tty2
+ConditionPathExists=!/var/lib/initial-firstboot/complete
+After=basic.target dbus.service local-fs.target systemd-tmpfiles-setup.service plymouth-quit-wait.service
+Wants=plymouth-quit-wait.service
+Before=getty@tty2.service kmsconvt@tty2.service greetd.service
+Conflicts=getty@tty2.service kmsconvt@tty2.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/sbin/chvt 2
+ExecStart=/usr/libexec/initial-firstboot
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

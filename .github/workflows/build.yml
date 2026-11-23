@@ -1,0 +1,130 @@
+name: Build sealed Noctalia bootc image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: Fedora bootc base image
+        required: true
+        default: quay.io/fedora/fedora-bootc:45
+      install_runner:
+        description: Install the self-hosted GitHub Actions runner payload
+        type: choice
+        options: ["1", "0"]
+        default: "1"
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  BASE_IMAGE: ${{ github.event.inputs.base_image || 'quay.io/fedora/fedora-bootc:45' }}
+  INSTALL_GITHUB_RUNNER: ${{ github.event.inputs.install_runner || '1' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Podman and skopeo
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo
+          podman --version
+          buildah --version
+
+      - name: Normalize image name
+        id: image
+        run: |
+          echo "name=${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" |
+            sudo -E podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Prepare Secure Boot secrets
+        id: signing
+        env:
+          SECUREBOOT_KEY: ${{ secrets.SECUREBOOT_KEY }}
+          SECUREBOOT_CERT: ${{ secrets.SECUREBOOT_CERT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/secrets"
+          if [[ -n "${SECUREBOOT_KEY}" && -n "${SECUREBOOT_CERT}" ]]; then
+            printf '%s\n' "${SECUREBOOT_KEY}" >"$RUNNER_TEMP/secrets/secureboot.key"
+            printf '%s\n' "${SECUREBOOT_CERT}" >"$RUNNER_TEMP/secrets/secureboot.crt"
+            echo "sign_uki=1" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::SECUREBOOT_KEY/SECUREBOOT_CERT are not set; building an UNSIGNED UKI. Secure Boot will not trust this image."
+            : >"$RUNNER_TEMP/secrets/secureboot.key"
+            : >"$RUNNER_TEMP/secrets/secureboot.crt"
+            echo "sign_uki=0" >>"$GITHUB_OUTPUT"
+          fi
+          echo "cache_bust=$(sha256sum "$RUNNER_TEMP/secrets/secureboot.crt" | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+        run: |
+          set -euxo pipefail
+          # chunkah's `FROM oci:out` flow is Podman/Buildah specific. The
+          # explicit -v mount and --security-opt are needed for Buildah < 1.44
+          # (the version shipped on GitHub's Ubuntu runners). Rootful Podman is
+          # used on the runner for reliable storage/subuid behavior.
+          sudo -E podman build \
+            --layers \
+            --skip-unused-stages=false \
+            --security-opt=label=disable \
+            -v "$PWD:/run/src" \
+            --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+            --build-arg FEDORA_RELEASE=45 \
+            --build-arg SIGN_UKI="${{ steps.signing.outputs.sign_uki }}" \
+            --build-arg UKI_CACHE_BUST="${{ steps.signing.outputs.cache_bust }}" \
+            --build-arg INSTALL_GITHUB_RUNNER="${INSTALL_GITHUB_RUNNER}" \
+            --secret id=secureboot_key,src="$RUNNER_TEMP/secrets/secureboot.key" \
+            --secret id=secureboot_cert,src="$RUNNER_TEMP/secrets/secureboot.crt" \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --label org.opencontainers.image.created="${{ github.event.repository.updated_at }}" \
+            --tag "${IMAGE}:latest" \
+            --tag "${IMAGE}:fedora45" \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            .
+
+      - name: Push
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+        run: |
+          set -euxo pipefail
+          sudo -E podman push "${IMAGE}:latest"
+          sudo -E podman push "${IMAGE}:fedora45"
+          sudo -E podman push "${IMAGE}:${GITHUB_SHA}"
+
+      - name: Upload public Secure Boot certificate
+        if: steps.signing.outputs.sign_uki == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: secureboot-certificate
+          path: ${{ runner.temp }}/secrets/secureboot.crt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish image digest
+        run: |
+          set -euxo pipefail
+          sudo -E skopeo inspect --format '{{.Digest}}' \
+            "docker://${REGISTRY}/${GITHUB_REPOSITORY,,}:latest"

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Register this machine as a self-hosted GitHub Actions runner.
+#
+# The runner payload is shipped read-only in /usr/libexec/actions-runner.
+# This helper copies it to the runner user's home, registers it with GitHub,
+# and enables github-runner.service.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: github-runner-setup --url URL --token TOKEN [options]
+
+Options:
+  --url URL          Repository or organization URL
+                     (e.g. https://github.com/owner/repo)
+  --token TOKEN      Runner registration token (short-lived)
+  --name NAME        Runner name (default: hostname)
+  --labels LABELS    Comma-separated labels (default: fedora-bootc-noctalia)
+  --work DIR         Work directory, relative to the runner dir (default: _work)
+  --replace          Replace an existing runner with the same name
+  -h, --help         Show this help
+
+The registration token is created in the GitHub repository/organization
+settings under Actions -> Runners -> New self-hosted runner. It expires after
+about one hour; this command only needs to be run once.
+EOF
+}
+
+URL=""
+TOKEN=""
+NAME="$(hostname)"
+LABELS="fedora-bootc-noctalia"
+WORK="_work"
+REPLACE=0
+
+while (($# > 0)); do
+    case "$1" in
+        --url) URL=${2-}; shift 2 ;;
+        --token) TOKEN=${2-}; shift 2 ;;
+        --name) NAME=${2-}; shift 2 ;;
+        --labels) LABELS=${2-}; shift 2 ;;
+        --work) WORK=${2-}; shift 2 ;;
+        --replace) REPLACE=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+done
+
+if [[ ${EUID} -ne 0 ]]; then
+    echo "Run this command as root." >&2
+    exit 1
+fi
+if [[ -z "${URL}" || -z "${TOKEN}" ]]; then
+    echo "--url and --token are required." >&2
+    usage >&2
+    exit 1
+fi
+
+RUNNER_DIR=/var/home/github-runner/actions-runner
+
+# Rootless Podman in CI jobs needs a subordinate UID/GID range. systemd-sysusers
+# does not allocate one, so add a dedicated range if it is not present yet.
+if ! grep -q '^github-runner:' /etc/subuid; then
+    usermod --add-subuids 1000000-1065535 github-runner || \
+        echo "warning: could not add subuid range for github-runner" >&2
+fi
+if ! grep -q '^github-runner:' /etc/subgid; then
+    usermod --add-subgids 1000000-1065535 github-runner || \
+        echo "warning: could not add subgid range for github-runner" >&2
+fi
+
+install -d -m 0755 -o github-runner -g github-runner /var/home/github-runner "${RUNNER_DIR}"
+
+if [[ ! -x "${RUNNER_DIR}/run.sh" ]]; then
+    echo "Copying the runner payload to ${RUNNER_DIR} ..."
+    cp -a /usr/libexec/actions-runner/. "${RUNNER_DIR}/"
+fi
+
+chown -R github-runner:github-runner /var/home/github-runner
+
+args=(
+    --unattended
+    --url "${URL}"
+    --token "${TOKEN}"
+    --name "${NAME}"
+    --labels "${LABELS}"
+    --work "${WORK}"
+)
+if [[ ${REPLACE} -eq 1 ]]; then
+    args+=(--replace)
+fi
+
+runuser -u github-runner -- env HOME=/var/home/github-runner \
+    "${RUNNER_DIR}/config.sh" "${args[@]}"
+
+systemctl enable --now github-runner.service
+systemctl --no-pager --full status github-runner.service || true
+
+echo
+echo "Runner registered. To remove it, use:"
+echo "  runuser -u github-runner -- ${RUNNER_DIR}/config.sh remove --token <remove-token>"
