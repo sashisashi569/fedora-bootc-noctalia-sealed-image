@@ -3,6 +3,20 @@ name: Build sealed Noctalia bootc image
 on:
   push:
     branches: [main]
+    # Only rebuild when the image content can change. Documentation
+    # (README), Makefile, installer-only scripts, top-level repart.d and
+    # keys do not affect the image; use workflow_dispatch for a forced build.
+    paths:
+      - 'Containerfile'
+      - '.dockerignore'
+      - 'scripts/install-packages.sh'
+      - 'scripts/configure-system.sh'
+      - 'scripts/install-github-runner.sh'
+      - 'scripts/rebuild-initramfs.sh'
+      - 'scripts/split-kernel.sh'
+      - 'scripts/build-uki.sh'
+      - 'rootfs/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       base_image:

@@ -182,6 +182,14 @@ podman run --rm localhost/fedora-bootc-noctalia-sealed:latest \
 `.github/workflows/build.yml` が `main` push、手動実行、毎週月曜の
 スケジュールでビルドし、GHCR に push します。
 
+push トリガーは**イメージのビルド入力に限定**しています。`Containerfile`、
+`.dockerignore`、`scripts/` のビルドスクリプト、`rootfs/**`、ワークフロー
+自身の変更でのみ自動ビルドされます。`README.md`、`Makefile`、
+`scripts/install-sealed.sh` などのインストーラ専用スクリプト、トップレベルの
+`repart.d/`、`keys/` の変更ではビルドされません。強制ビルドは
+`gh workflow run build.yml` を使ってください。定期ビルド（毎週月曜）は
+upstream パッケージ更新のため継続します。
+
 #### リモートリポジトリの作成と push
 
 このディレクトリはまだ Git リポジトリではないため、初回のみ次を実行します。
