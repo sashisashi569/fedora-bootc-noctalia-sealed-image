@@ -235,7 +235,8 @@ Next steps:
        # FIDO2 with PIN
        systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes ${root}
 
-       # Public-key policy (advanced; requires a .pcrsig in the UKI)
+       # Public-key policy (advanced; requires a PCR signature:
+       #   UKI .pcrsig or /etc/systemd/tpm2-pcr-signature.json)
        #   See README section 6.5. The fixed PCR 7+11+14 is the default.
 
   The passphrase keyslot remains as a recovery method.

@@ -547,17 +547,32 @@ sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
   （デフォルトも 11 です）。実効的な PCR は 7+11+14 です。
 - `--tpm2-public-key=` は PEM の RSA 公開鍵を受け取ります。証明書をそのまま
   渡すのではなく、上記のように公開鍵を取り出してください。
-- これは UKI に **PCR 署名（`.pcrsig`）** と公開鍵（`.pcrpkey`）が
-  埋め込まれている場合に機能します。`--tpm2-signature=` で現在の PCR に
-  対する署名 JSON を渡すと、enroll 時の安全確認も行えます。
+- `--tpm2-public-key` の **enroll 自体は署名なしでも可能**です。ただし起動時に
+  TPM から鍵を取り出すには、現在の PCR 11 に対する有効な **PCR 署名** が
+  必要です。署名は UKI の **`.pcrsig`** でも、`tpm2-pcr-signature.json` を
+  `/etc/systemd/`、`/run/systemd/`、`/usr/lib/systemd/` のいずれかに置いても
+  かまいません（`systemd-cryptsetup` が自動的に探します）。
+- `--tpm2-signature=` は **enroll 時の安全確認**用で、省略可能です。署名
+  ファイルを渡すと、現在の PCR 状態で本当に解錠できるかを確認してから
+  slot を作成します。省略した場合でも slot は作成されますが、起動時に
+  有効な署名がなければ TPM では解錠できません（パスフレーズ / FIDO2 へ
+  フォールバック）。
+- 署名 JSON は秘密鍵で生成します。**イメージに同梱しなくても**、ビルド鍵を
+  持つ環境でオフライン生成し、対象機の `/etc/systemd/tpm2-pcr-signature.json`
+  に配置できます。UKI 更新ごとに新しい UKI 用の JSON に差し替えますが、
+  公開鍵は同じなので **TPM2 の再登録は不要**です。秘密鍵を対象機に置く
+  必要はありません。署名 JSON 自体は秘密情報ではありません。
 - 公開鍵ポリシーでも、MOK の変更（PCR 14）、Secure Boot の変更（PCR 7）、
   署名鍵のローテーションでは再登録が必要です。UKI の更新だけなら
   再登録不要です。
 
 > **現状のイメージについて**: このリポジトリの現行 `scripts/build-uki.sh` は
-> `.pcrsig` を埋め込んでいないため、上記の公開鍵ポリシーをそのまま使うことは
-> できません。まずは 6.2 の固定 PCR 7+11+14 + PIN を使ってください。公開鍵
-> ポリシーを有効にするには、下記のオフライン署名をビルドに追加します。
+> `.pcrsig` を埋め込んでいません。そのため、何もせずに公開鍵 slot を
+> 解錠に使うことはできません。固定 PCR 7+11+14 + PIN を既定とするか、
+> 下記 6.5.1 のオフライン署名をビルドに追加するか、生成した
+> `tpm2-pcr-signature.json` を対象機の `/etc/systemd/` に配置してください。
+> イメージを再ビルドせずに公開鍵ポリシーを使う場合は、この JSON 方式が
+> 利用できます。
 
 #### 6.5.1 ビルド時に `.pcrsig` を埋め込む（オフライン署名）
 
@@ -606,6 +621,10 @@ sbsign --key /run/secrets/secureboot_key \
 - 署名は UKI 署名と同じ鍵（`secureboot.key`）で行えます。
 - 生成した UKI を `ukify inspect` で確認し、`.pcrsig` と `.pcrpkey` が
   含まれていることを確認してください。
+- UKI に `.pcrsig` を埋め込まず、`/tmp/signed.pcrs` を
+  `/etc/systemd/tpm2-pcr-signature.json` として配置するだけでも、公開鍵
+  ポリシーを利用できます。この場合も UKI 更新ごとに JSON を更新して
+  ください。
 - `.pcrsig` の署名は PCR 11 の測定値に対するものです。UKI を更新したら
   新しい `.pcrsig` を生成して同じ鍵で署名します。TPM の再登録は不要です。
 - この手順を `scripts/build-uki.sh` に組み込むと、CI でビルドしたイメージでも
