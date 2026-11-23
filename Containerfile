@@ -146,6 +146,7 @@ RUN dnf install -y \
         sbsigntools \
         binutils \
         jq \
+        openssl \
     && dnf clean all
 
 # Keep these ARGs after the dnf layer so changing the signing key does not

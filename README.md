@@ -485,11 +485,16 @@ PCR 14 を加えることで、MOK の変更も TPM の封印条件に含めら�
 systemd のドキュメントでも、shim/MOK を使う場合は PCR 7, 11, 14 の
 組み合わせが推奨されています。
 
-### 6.2 推奨: PIN + TPM2（PCR 7+11+14）
+### 6.2 推奨: PIN + TPM2（実効 PCR 7+11+14）
 
 日常のアンロックは **PIN + TPM2** を推奨します。systemd 262 の
 `--tpm2-with-pin=yes` は PIN を Argon2id で hardening するため、TPM 単体が
 侵害されても PIN なしではボリューム鍵を取り出せません。
+
+このイメージの**署名付きビルド**（CI で `SECUREBOOT_KEY`/`SECUREBOOT_CERT`
+を設定）は UKI に **`.pcrsig` / `.pcrpkey`** を同梱しています。そのため、
+公開鍵ポリシー + PIN を推奨します。実効 PCR は 7+11+14 で、UKI 更新時の
+TPM2 再登録が不要です。
 
 ```bash
 # デバイス確認（TPM2 / FIDO2）
@@ -497,11 +502,24 @@ lsblk
 sudo systemd-cryptenroll --tpm2-device=list
 sudo systemd-cryptenroll --fido2-device=list
 
-# 推奨: PIN + TPM2 (PCR 7+11+14)
+# 推奨（署名付きイメージ）: PIN + TPM2 + 公開鍵ポリシー
+#   7/14 固定、11 は UKI の PCR 署名で検証（実効 7+11+14）
+openssl x509 -in secureboot.crt -pubkey -noout > secureboot.pub.pem
+sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+14 \
+  --tpm2-public-key=secureboot.pub.pem \
+  --tpm2-public-key-pcrs=11 \
+  /dev/nvme0n1p2
+
+# unsigned / カスタムビルド、または単純なフォールバック:
+# 固定 PCR 7+11+14（UKI 更新後に再登録が必要）
 sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
   --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
 ```
 
+- `--tpm2-signature=` は enroll 時の安全確認用で省略可能です。署名付き
+  イメージでは `.pcrsig` が UKI に含まれ、起動時に `systemd-cryptsetup` が
+  使用します。
 - PIN は数字に限らず任意の文字列です。誤入力は TPM の dictionary attack
   lockout を進めるため、取扱いに注意してください。
 - `--tpm2-with-pin=direct` は PBKDF2 互換の旧方式です。Argon2id の
@@ -525,7 +543,7 @@ sudo systemd-cryptenroll --fido2-device=auto \
   --fido2-with-client-pin=yes /dev/nvme0n1p2
 ```
 
-### 6.5 公開鍵ポリシーによる再登録の削減（上級者向け）
+### 6.5 公開鍵ポリシーによる再登録の削減（署名付きイメージ推奨）
 
 `systemd-cryptenroll --tpm2-public-key=` を使うと、PCR 11 の現在値ではなく
 **UKI の PCR 署名を検証するポリシー**にできます。同じ公開鍵で署名された
@@ -566,18 +584,19 @@ sudo systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
   署名鍵のローテーションでは再登録が必要です。UKI の更新だけなら
   再登録不要です。
 
-> **現状のイメージについて**: このリポジトリの現行 `scripts/build-uki.sh` は
-> `.pcrsig` を埋め込んでいません。そのため、何もせずに公開鍵 slot を
-> 解錠に使うことはできません。固定 PCR 7+11+14 + PIN を既定とするか、
-> 下記 6.5.1 のオフライン署名をビルドに追加するか、生成した
-> `tpm2-pcr-signature.json` を対象機の `/etc/systemd/` に配置してください。
-> イメージを再ビルドせずに公開鍵ポリシーを使う場合は、この JSON 方式が
-> 利用できます。
+> **署名付きビルドについて**: CI で `SECUREBOOT_KEY`/`SECUREBOOT_CERT` を
+> 設定した署名付きビルドは、`scripts/build-uki.sh` が `.pcrsig`/`.pcrpkey` を
+> UKI に同梱します。この場合、6.2 の公開鍵ポリシー + PIN をそのまま使えます。
+> unsigned ビルド（secrets なし）は `.pcrsig` を同梱しないため、固定 PCR
+> 7+11+14 + PIN、または `/etc/systemd/tpm2-pcr-signature.json` 方式を
+> 使ってください。
 
-#### 6.5.1 ビルド時に `.pcrsig` を埋め込む（オフライン署名）
+#### 6.5.1 `.pcrsig` の生成（`build-uki.sh` 実装済み）
 
-ビルド環境に TPM がない場合は、`ukify --policy-digest` でポリシーダイジェストを
-出力し、`openssl` でオフライン署名してから `.pcrsig` を UKI に添付します。
+この手順は `scripts/build-uki.sh` の署名付きビルド（`SIGN_UKI=1`）に実装
+されています。ビルド環境に TPM がないため、`ukify --policy-digest` で
+ポリシーダイジェストを出力し、`openssl` でオフライン署名してから
+`.pcrsig` を UKI に添付します。以下は実装の要点です。
 
 ```bash
 # 1. ポリシーダイジェストを JSON で出力（TPM 不要）
@@ -627,14 +646,26 @@ sbsign --key /run/secrets/secureboot_key \
   ください。
 - `.pcrsig` の署名は PCR 11 の測定値に対するものです。UKI を更新したら
   新しい `.pcrsig` を生成して同じ鍵で署名します。TPM の再登録は不要です。
-- この手順を `scripts/build-uki.sh` に組み込むと、CI でビルドしたイメージでも
-  公開鍵ポリシーを利用できます。
+- 署名付きビルドでは、この処理が `scripts/build-uki.sh` により自動で
+  行われます。unsigned ビルドでは `.pcrsig` は同梱されません。
 
 ### 6.6 イメージ更新後の再登録
 
-固定 PCR 7+11+14 の場合、UKI 更新で PCR 11 が変わるため、更新後に一度
-再登録します。パスフレーズで起動してから、既存の TPM2 slot を消して
-新しい slot を作ります。
+**署名付きイメージ + 公開鍵ポリシー（推奨）**: UKI 更新では `.pcrsig` が
+新しくなるだけで、PCR 7/14 と公開鍵は変わりません。TPM2 の再登録は不要です。
+MOK の変更、Secure Boot の変更、署名鍵のローテーションがあった場合だけ、
+公開鍵ポリシーの slot を再作成します。
+
+```bash
+sudo systemd-cryptenroll --wipe-slot=tpm2 \
+  --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+14 \
+  --tpm2-public-key=secureboot.pub.pem \
+  --tpm2-public-key-pcrs=11 /dev/nvme0n1p2
+```
+
+**unsigned / 固定 PCR 7+11+14**: UKI 更新で PCR 11 が変わるため、更新後に
+パスフレーズで起動して再登録します。
 
 ```bash
 sudo systemd-cryptenroll --wipe-slot=tpm2 \
@@ -649,6 +680,9 @@ sudo systemd-cryptenroll --wipe-slot=tpm2 \
   UKI 署名鍵の変更があった場合も再登録が必要です。
 - 公開鍵ポリシー（6.5）を使っている場合、同じ鍵で署名された UKI の更新では
   再登録不要です。鍵をローテーションした場合は再登録してください。
+- unsigned ビルドや `/etc/systemd/tpm2-pcr-signature.json` 方式の場合も、
+  UKI 更新時は新しい署名（`.pcrsig` または JSON）が必要です。固定 PCR
+  7+11+14 の場合は上記の固定 PCR 再登録を行います。
 
 ### 6.7 initramfs / 自動解錠
 

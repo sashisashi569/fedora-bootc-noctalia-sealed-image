@@ -18,11 +18,18 @@ only once (`/var/lib/initial-firstboot/complete`).
 
 ## LUKS unlock enrollment
 
-On the installed system, as root:
+On the installed system, as root. Signed images embed `.pcrsig`/`.pcrpkey`;
+the recommended daily unlock is PIN + TPM2 with the public-key policy
+(effective PCR 7+11+14; no TPM2 re-enrollment on UKI updates):
 
 ```bash
-# Recommended daily unlock: PIN + TPM2 (PCR 7+11+14)
-#   7 = Secure Boot policy, 11 = UKI, 14 = MOK
+openssl x509 -in secureboot.crt -pubkey -noout > secureboot.pub.pem
+systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+  --tpm2-pcrs=7+14 \
+  --tpm2-public-key=secureboot.pub.pem \
+  --tpm2-public-key-pcrs=11 /dev/nvme0n1p2
+
+# Unsigned/custom image or fallback: fixed PCR 7+11+14
 systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
   --tpm2-pcrs=7+11+14 /dev/nvme0n1p2
 
@@ -35,9 +42,9 @@ systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes /dev/nvme0n1
 
 Keep the original passphrase keyslot as a recovery method.
 
-PCR 14 covers MOK changes (Evil Maid with a MOK-enrolled key). The public-key
-policy (`--tpm2-public-key`) can reduce re-enrollment on image updates, but
-requires a `.pcrsig` in the UKI; see the repository README section 6.5.
+PCR 14 covers MOK changes (Evil Maid with a MOK-enrolled key). Signed images
+embed `.pcrsig`/`.pcrpkey`; unsigned builds can use a standalone
+`tpm2-pcr-signature.json` in `/etc/systemd/`. See repository README 6.5.
 
 ## GitHub Actions runner
 

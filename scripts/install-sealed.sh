@@ -224,8 +224,17 @@ Next steps:
   2. At the first-boot TUI, create your user and set hostname/timezone.
   3. Enroll LUKS unlock methods (run as root on the installed system):
 
-       # Recommended daily unlock: PIN + TPM2 (PCR 7+11+14)
-       #   7 = Secure Boot policy, 11 = UKI measurement, 14 = MOK
+       # Recommended daily unlock (signed image):
+       #   PIN + TPM2 + public-key policy
+       #   effective PCR 7+11+14; no TPM2 re-enroll on UKI updates
+       openssl x509 -in secureboot.crt -pubkey -noout > secureboot.pub.pem
+       systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
+           --tpm2-pcrs=7+14 \
+           --tpm2-public-key=secureboot.pub.pem \
+           --tpm2-public-key-pcrs=11 ${root}
+
+       # Unsigned/custom image or fallback: fixed PCR 7+11+14
+       #   (re-enroll after UKI updates)
        systemd-cryptenroll --tpm2-device=auto --tpm2-with-pin=yes \
            --tpm2-pcrs=7+11+14 ${root}
 
@@ -235,9 +244,9 @@ Next steps:
        # FIDO2 with PIN
        systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes ${root}
 
-       # Public-key policy (advanced; requires a PCR signature:
-       #   UKI .pcrsig or /etc/systemd/tpm2-pcr-signature.json)
-       #   See README section 6.5. The fixed PCR 7+11+14 is the default.
+       # Signed images embed .pcrsig/.pcrpkey in the UKI.
+       # For unsigned/custom images, see README 6.5
+       # (tpm2-pcr-signature.json alternative).
 
   The passphrase keyslot remains as a recovery method.
 EOF
