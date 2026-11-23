@@ -694,6 +694,122 @@ sudo systemd-cryptenroll --wipe-slot=tpm2 \
 - PIN + TPM の入力は initramfs の console keymap を使います。US 以外の
   配列はビルド時の `VCONSOLE_KEYMAP` で設定してください。
 
+### 6.8 Secure Boot 検証結果（テスト VM）
+
+Fedora 45 の OVMF（`edk2-ovmf` の 2MB secure code +
+`OVMF_VARS.secboot.fd`）、db に Microsoft UEFI CA 2011/2023 を登録した
+VARS、TPM 2.0（`tpm-crb`）を使って、次のチェーンを検証しました。
+
+```text
+firmware db (Microsoft UEFI CA 2011 + 2023)
+  -> shim (Microsoft dual-signed)
+  -> systemd-boot (テスト鍵で再署名、MOK で検証)
+  -> UKI (.pcrsig/.pcrpkey 同梱、テスト鍵署名、MOK で検証)
+  -> LUKS root
+```
+
+結果:
+
+- `mokutil --sb-state` -> `SecureBoot enabled`
+- `bootctl status` -> `Secure Boot: enabled (user)`
+- `bootc status` -> booted image は `.pcrsig` 入り
+  `sha256:fe5022dd...`（verity `24bf964e...`）
+- ESP の UKI の SHA256 はビルド時の署名済み UKI と一致
+  （`.pcrsig` 3760 bytes / `.pcrpkey` 800 bytes を同梱）
+- shim は Microsoft UEFI CA 2011 と 2023 のデュアル署名。
+- db には Microsoft UEFI CA 2011 / 2023 と Windows UEFI CA 2023 が含まれる。
+
+#### 既知の問題: shim と systemd-boot の Fedora CA 不一致
+
+Fedora 45 の `shim-x64-16.1-7` は vendor cert に
+**Fedora Secure Boot CA 20200709** を埋め込んでいますが、
+`systemd-boot-x64-262-1.fc45` の `grubx64.efi` は
+**Fedora Secure Boot CA 20250530** で署名されています。そのため、
+Secure Boot 有効時は shim が systemd-boot を検証できず、
+`Verification failed: (0x1A) Security Violation` で停止します。
+
+テストでは、systemd-boot を UKI と同じテスト鍵で再署名し、
+MOK に同じ証明書を登録してチェーンを成立させました。
+
+```bash
+# 既存署名を削除してテスト鍵で再署名
+cp /boot/EFI/fedora/grubx64.efi /tmp/grubx64.orig.efi
+sbattach --remove /tmp/grubx64.orig.efi
+sbsign --key keys/secureboot.key --cert keys/secureboot.crt \
+  --output /tmp/grubx64.signed.efi /tmp/grubx64.orig.efi
+# ESP の両方のパスを置き換える
+cp /tmp/grubx64.signed.efi /boot/EFI/fedora/grubx64.efi
+cp /tmp/grubx64.signed.efi /boot/EFI/BOOT/grubx64.efi
+```
+
+代替案:
+
+- Fedora CA 20250530 の証明書を MOK に登録する。
+- shim と systemd-boot の両方が同じ Fedora CA で揃うパッケージ更新を待つ。
+- systemd-boot を Fedora CA 20200709 で署名したバージョンに固定する。
+
+#### 既知の問題: NixOS OVMF の Secure Boot 変数
+
+NixOS の OVMF（`edk2-x86_64-secure-code.fd` + `edk2-i386-vars.fd`）は
+Secure Boot のデフォルト変数テンプレートを持たないため、
+libvirt の `enrolled-keys=yes` は
+`Unable to find 'efi' firmware that is compatible` で失敗します。
+テストでは Fedora `edk2-ovmf` の `OVMF_CODE.secboot.fd` と
+`OVMF_VARS.secboot.fd` を使い、必要に応じて `virt-fw-vars`
+（`virt-firmware`）で PK/KEK/db/MOK と `SecureBootEnable` を編集しました。
+
+#### 既知の問題: TPM2 のファームウェア測定
+
+テスト VM の TPM 2.0 は `tpm_crb` として認識され、
+`systemd-cryptenroll --tpm2-device=list` も
+`/dev/tpmrm0  MSFT0101:00  tpm_crb_acpi` を表示します。
+ただし Fedora OVMF の 2MB secure code では
+`bootctl status` が `TPM2 Support: driver only, firmware unavailable`、
+`Measured UKI: no` となり、ファームウェアの TPM2 event log /
+PCR 7 測定が公開されません。NixOS OVMF の secure code では
+`TPM2 Support: yes` / `Measured UKI: yes` でした。
+TPM2 の LUKS 登録・解錠を検証する場合は、TPM2 event log を公開する
+ファームウェア（NixOS OVMF など）と、対応する VARS を使ってください。
+なお、今回の TPM2 + PIN の LUKS 登録は、後述のコンソール入力欠落のため
+完了できませんでした（デバイス自体は利用可能です）。
+
+#### テスト環境のコンソール入力について
+
+この QEMU/OVMF のテスト環境では、LUKS パスフレーズプロンプトが
+**最初の 0〜4 キーを落とす**ことがあり、通常のパスフレーズ入力が
+不安定でした（同じパスフレーズでも入力長が 8/10/12 文字と変わる）。
+テストでは、空のパスフレーズの keyslot と `Enter` だけで解錠する
+ワークアラウンドを使いました。**本番では空のパスフレーズを使わず**、
+TPM2 + PIN、FIDO2 + PIN、または通常のパスフレーズを使ってください。
+この入力欠落はテスト VM のコンソール（Plymouth/OVMF）固有で、
+実機のキーボードでは発生しない想定です。
+
+テスト後に空の keyslot を削除する場合:
+
+```bash
+# 空のキーファイルで該当 keyslot を削除
+: > /tmp/empty.key
+sudo cryptsetup luksRemoveKey /dev/vda2 --key-file /tmp/empty.key
+```
+
+#### 検証コマンド
+
+```bash
+mokutil --sb-state
+bootctl status
+sudo bootc status
+sudo sbverify --list /boot/EFI/fedora/shimx64.efi
+sudo sbverify --list /boot/EFI/fedora/grubx64.efi
+# shim の vendor cert
+sudo objcopy --dump-section .vendor_cert=/tmp/vendor.bin \
+  /boot/EFI/fedora/shimx64.efi
+tail -c +17 /tmp/vendor.bin > /tmp/vendor.der
+openssl x509 -inform DER -in /tmp/vendor.der -noout -subject -issuer
+```
+
+> **注意**: `keys/` の鍵はテスト用です。本番では鍵をローテーションし、
+> Secure Boot の db/MOK と `.pcrsig` を新しい鍵で再生成してください。
+
 ## 7. GitHub Actions self-hosted runner
 
 `INSTALL_GITHUB_RUNNER=1`（既定）で actions/runner の payload を
