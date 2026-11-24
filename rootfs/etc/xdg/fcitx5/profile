@@ -1,0 +1,20 @@
+# System-wide default fcitx5 profile.
+#
+# fcitx5 reads this only while the user has no ~/.config/fcitx5/profile yet.
+# It keeps the system keyboard layout for direct input and adds Mozc as the
+# Japanese input method. Ctrl+Space (or Zenkaku_Hankaku) switches between them.
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=keyboard-us
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=mozc
+Layout=
+
+[GroupOrder]
+0=Default

@@ -61,6 +61,31 @@ greetd のログイン時に GNOME Keyring を解錠するため `gnome-keyring-
 導入します。これがないと、初回ログイン後に「Default keyring」の作成を
 求めるダイアログが出ることがあります。
 
+### 日本語入力 (fcitx5 + Mozc)
+
+次のパッケージを追加しています。
+
+- `fcitx5` / `fcitx5-mozc`（Mozc 日本語 IME）
+- `fcitx5-configtool`（GUI 設定ツール）
+- `fcitx5-gtk3` / `fcitx5-gtk4`（GTK アプリ用 IM モジュール）
+- `fcitx5-qt5` / `fcitx5-qt6`（Qt アプリ用 IM モジュール）
+
+`rootfs/etc/skel/.config/umbriel/config.toml` で `fcitx5 -d` を Umbriel の
+`autostart` に追加し、`GTK_IM_MODULE=fcitx` / `QT_IM_MODULE=fcitx` /
+`XMODIFIERS=@im=fcitx` を `[environment]` に設定しています。XWayland の
+アプリも `XMODIFIERS` 経由で Mozc を利用できます。
+
+システム既定の fcitx5 プロファイル `/etc/xdg/fcitx5/profile` は
+「システムキーボード配列 + Mozc」のグループを持つため、初回ログイン直後から
+**Ctrl+Space**（日本語配列では半角/全角）で日本語入力に切り替えられます。
+Mozc の設定やキー割り当ては `fcitx5-configtool` で変更できます。
+
+`~/.config/fcitx5/profile` が既にあるユーザーや、
+`~/.config/umbriel/config.toml` をカスタマイズ済みのユーザーには上記の
+システム既定が適用されません。その場合は `fcitx5-configtool` で Mozc を
+追加し、Umbriel 設定の `autostart` に `"fcitx5 -d"` を、`[environment]` に
+上の 3 変数を追加してください。
+
 ### Noctalia family
 
 - `noctalia`（Fedora 45 公式リポジトリ）
@@ -72,7 +97,8 @@ greetd のログイン時に GNOME Keyring を解錠するため `gnome-keyring-
 
 `/etc/greetd/config.toml` は `noctalia-greeter-session -- --session umbriel`
 を起動し、`greetd` ユーザーで実行します。初回ログイン後は Umbriel の
-`autostart = ["noctalia"]` により Noctalia Shell が起動します。
+`autostart = ["fcitx5 -d", "noctalia"]` により fcitx5 と Noctalia Shell が
+起動します。
 
 ### ブート / FDE
 
@@ -130,6 +156,7 @@ scripts/
 rootfs/                       イメージにそのまま入る設定
   etc/greetd/config.toml
   etc/skel/.config/umbriel/config.toml
+  etc/xdg/fcitx5/profile      fcitx5 既定プロファイル（Mozc）
   usr/libexec/initial-firstboot
   usr/libexec/github-runner-setup
   usr/lib/systemd/system/*.service
@@ -931,6 +958,8 @@ bootctl list
 rpm -q nix-core vim vim-X11 git tree opencode flatpak \
   noctalia umbriel-nightly noctalia-greeter greetd \
   kitty firefox Thunar mpv seahorse gnome-keyring-pam \
+  fcitx5 fcitx5-mozc fcitx5-configtool \
+  fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 \
   systemd-boot-x64 shim-x64 plymouth \
   cryptsetup tpm2-tss fido2-tools
 
@@ -1004,10 +1033,39 @@ Umbriel の `~/.config/umbriel/config.toml` に
 
 ```toml
 [general]
-autostart = ["noctalia"]
+autostart = ["fcitx5 -d", "noctalia"]
+
+[environment]
+GTK_IM_MODULE = "fcitx"
+QT_IM_MODULE = "fcitx"
+XMODIFIERS = "@im=fcitx"
 ```
 
 があることを確認してください（`/etc/skel` から新規ユーザーに配布されます）。
+
+### 日本語入力 (Mozc) が使えない
+
+```bash
+# fcitx5 の診断
+fcitx5-diagnose
+
+# 起動状態と IM 環境変数
+pgrep -a fcitx5
+systemctl --user show-environment | grep -E 'GTK_IM_MODULE|QT_IM_MODULE|XMODIFIERS'
+
+# 既定プロファイル（新規ユーザーのみ）とユーザー設定
+cat /etc/xdg/fcitx5/profile
+ls -l ~/.config/fcitx5/profile
+```
+
+- `fcitx5` が起動していない場合は、ログインし直すか `fcitx5 -d` を実行して
+  ください。Umbriel の `autostart` に `"fcitx5 -d"` が必要です。
+- `~/.config/fcitx5/profile` が存在する場合、`/etc/xdg/fcitx5/profile` は
+  読まれません。`fcitx5-configtool` で Mozc を追加してください。
+- 切替キーは既定で **Ctrl+Space** です。日本語配列では半角/全角キーも
+  使えます。`fcitx5-configtool` の「グローバルオプション」で変更できます。
+- GTK/Qt アプリで入力できない場合は、環境変数がセッションに渡っているか
+  `systemctl --user show-environment` で確認し、ログインし直してください。
 
 ### Secure Boot で起動しない
 

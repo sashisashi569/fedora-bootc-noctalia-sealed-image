@@ -24,7 +24,8 @@ files = []
 # https://docs.noctalia.dev/umbriel/configuration/#general
 #
 [general]
-autostart = ["noctalia"]
+# Start the input method before the shell so the first window already has it.
+autostart = ["fcitx5 -d", "noctalia"]
 # xwayland = false
 # Sharp X11 apps and games on scaled outputs; they see physical resolutions.
 # xwayland_native_resolution = true
@@ -38,6 +39,15 @@ autostart = ["noctalia"]
 # nvidia_sync_workaround = false
 # Modal dialogs hang on their parent window and follow it. Turn this off to keep them ordinary windows.
 # attach_modal_dialogs = false
+#
+# Input method (fcitx5 + Mozc). These are inherited by the session, its
+# autostart commands and the systemd user manager. GTK_IM_MODULE and
+# QT_IM_MODULE select the fcitx5 GTK/Qt modules; XMODIFIERS covers X11 and
+# XWayland applications.
+[environment]
+GTK_IM_MODULE = "fcitx"
+QT_IM_MODULE = "fcitx"
+XMODIFIERS = "@im=fcitx"
 
 # ==============================================================================
 # Lid events

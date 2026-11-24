@@ -16,6 +16,14 @@ The `initial-firstboot.service` TUI runs on tty1 before greetd and configures
 hostname, timezone, locale, keyboard and the first administrator user. It runs
 only once (`/var/lib/initial-firstboot/complete`).
 
+## Japanese input
+
+fcitx5 with the Mozc engine is installed and started with the Umbriel
+session. Press Ctrl+Space (or Zenkaku_Hankaku on a Japanese keyboard) to
+toggle Japanese input. Run `fcitx5-configtool` to change engines, keybinds or
+Mozc settings. The system default profile is `/etc/xdg/fcitx5/profile`;
+`~/.config/fcitx5/profile` overrides it when present.
+
 ## LUKS unlock enrollment
 
 On the installed system, as root. Signed images embed `.pcrsig`/`.pcrpkey`;

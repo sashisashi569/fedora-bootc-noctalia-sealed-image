@@ -39,6 +39,7 @@ rpm -e --nodeps systemd-boot-unsigned 2>/dev/null || true
 # Explicitly requested packages, Noctalia family, desktop applications, and the
 # runtime pieces needed by them (audio, portals, keyring, LUKS/FIDO2/TPM2,
 # Plymouth, Secure Boot tooling, GitHub Actions runner dependencies).
+# Japanese input is fcitx5 + Mozc, with GTK and Qt IM modules for native apps.
 dnf install -y --refresh --allowerasing \
     nix-core \
     vim vim-X11 git tree \
@@ -48,6 +49,8 @@ dnf install -y --refresh --allowerasing \
     dialog \
     kitty firefox Thunar thunar-volman tumbler gvfs gvfs-mtp udisks2 \
     mpv mpv-mpris seahorse \
+    fcitx5 fcitx5-mozc fcitx5-configtool \
+    fcitx5-gtk3 fcitx5-gtk4 fcitx5-qt5 fcitx5-qt6 \
     noctalia umbriel-nightly noctalia-greeter greetd xwayland-satellite \
     xdg-desktop-portal xdg-desktop-portal-gtk \
     xdg-desktop-portal-umbriel-nightly \
