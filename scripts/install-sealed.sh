@@ -10,7 +10,7 @@
 #   sudo ./scripts/install-sealed.sh \
 #     --image ghcr.io/owner/fedora-bootc-noctalia-sealed:latest \
 #     --disk /dev/nvme0n1 \
-#     --mok-cert keys/secureboot.cer
+#     --mok-cert certs/secureboot.cer
 set -euo pipefail
 
 IMAGE=""

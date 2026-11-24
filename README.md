@@ -114,6 +114,8 @@ Thunar のボリューム管理、フォント、`firewalld`、`chrony` など�
 ```text
 Containerfile                 マルチステージ sealed ビルド
 Makefile                      ローカルビルド用
+certs/                        公開 Secure Boot / MOK 証明書（コミット対象）
+keys/                         秘密鍵とローカル用証明書（.gitignore）
 scripts/
   install-packages.sh         dnf install / remove
   configure-system.sh         user, systemd, authselect, keymap
@@ -163,7 +165,10 @@ podman run --rm localhost/fedora-bootc-noctalia-sealed:latest \
 > のように実行してください。
 
 鍵は `keys/secureboot.key`（秘密鍵）と `keys/secureboot.crt` /
-`keys/secureboot.cer`（公開証明書）です。`keys/` は `.gitignore` 済みです。
+`keys/secureboot.cer`（ローカル用の公開証明書）です。`keys/` は
+`.gitignore` 済みです。配布用の公開証明書は `certs/` にコミットされており、
+鍵をローテーションしたときは `make certs` で同期してください。fingerprint は
+`certs/README.md` に記載しています。
 
 主な build args:
 
@@ -183,8 +188,8 @@ podman run --rm localhost/fedora-bootc-noctalia-sealed:latest \
 スケジュールでビルドし、GHCR に push します。
 
 push トリガーは**イメージのビルド入力に限定**しています。`Containerfile`、
-`.dockerignore`、`scripts/` のビルドスクリプト、`rootfs/**`、ワークフロー
-自身の変更でのみ自動ビルドされます。`README.md`、`Makefile`、
+`.dockerignore`、`scripts/` のビルドスクリプト、`rootfs/**`、`certs/**`、
+ワークフロー自身の変更でのみ自動ビルドされます。`README.md`、`Makefile`、
 `scripts/install-sealed.sh` などのインストーラ専用スクリプト、トップレベルの
 `repart.d/`、`keys/` の変更ではビルドされません。強制ビルドは
 `gh workflow run build.yml` を使ってください。定期ビルド（毎週月曜）は
@@ -192,13 +197,14 @@ upstream パッケージ更新のため継続します。
 
 #### リモートリポジトリの作成と push
 
-このディレクトリはまだ Git リポジトリではないため、初回のみ次を実行します。
+初回のリモート作成時は次のようにします（すでに Git リポジトリの場合は
+`git add .` 以降を実行してください）。
 
 ```bash
 cd fedora-bootc-noctalia-sealed-image
 git init -b main
 git add .
-git status --short   # keys/ や out/ が含まれないことを確認
+git status --short   # keys/ や out/ が含まれず、certs/ が含まれることを確認
 git commit -m "Initial sealed bootc image"
 ```
 
@@ -216,8 +222,9 @@ git push -u origin main
 ```
 
 `keys/` は `.gitignore` 済みです。秘密鍵（`secureboot.key`）は絶対に
-コミットしないでください。テスト用鍵ではなく本番用鍵を使う場合は、
-`openssl` で新しい鍵・証明書を生成し、`keys/` の外に保管してください。
+コミットしないでください。公開証明書は `certs/` にコミットします。テスト用
+鍵ではなく本番用鍵を使う場合は、`openssl` で新しい鍵・証明書を生成し、
+秘密鍵は `keys/` の外に保管してください。
 
 #### Actions の Secrets
 
@@ -234,6 +241,10 @@ gh secret list
 | --- | --- |
 | `SECUREBOOT_KEY` | `keys/secureboot.key` の中身（PEM 秘密鍵） |
 | `SECUREBOOT_CERT` | `keys/secureboot.crt` の中身（PEM 証明書） |
+
+`SECUREBOOT_CERT` は `certs/secureboot.crt` と同一にしてください。
+ワークフローは両者の SHA256 fingerprint を比較し、不一致ならビルドを
+失敗させます。公開証明書を更新したときは、secret も同じ証明書に更新します。
 
 未設定の場合は警告を出して **unsigned UKI** をビルドします。Secure Boot を
 使わない検証には使えますが、Secure Boot 有効時は起動できません。
@@ -257,8 +268,19 @@ ghcr.io/<owner>/<repo>:fedora45
 ghcr.io/<owner>/<repo>:<commit-sha>
 ```
 
-に push されます。GHCR のパッケージは初回 push で自動作成されます。公開
-証明書は Actions の artifact `secureboot-certificate` から取得できます。
+に push されます。GHCR のパッケージは初回 push で自動作成されます。
+
+公開 Secure Boot / MOK 証明書はリポジトリの `certs/` にコミットされています。
+
+```text
+certs/secureboot.cer   DER（mokutil --import / install-sealed.sh 用）
+certs/secureboot.crt   PEM（OpenSSL / sbverify / TPM2 public-key policy 用）
+```
+
+SHA256 fingerprint と検証手順は `certs/README.md` に記載しています。
+Actions の artifact `secureboot-certificate` にも同じ証明書が含まれますが、
+90 日で期限切れになり GitHub 認証も必要なため、リポジトリの `certs/` を
+正としてください。
 
 > GHCR のパッケージ可視性は既定で private です。必要に応じて
 > GitHub の **Packages → 対象イメージ → Package settings** から public に
@@ -292,7 +314,7 @@ HTTP の OCI レジストリを立てて、ビルドしたイメージを
 sudo ./scripts/install-sealed.sh --insecure-registry \
   --image localhost:5000/noctalia-sealed:test \
   --disk /dev/nvme0n1 \
-  --mok-cert keys/secureboot.cer
+  --mok-cert certs/secureboot.cer
 ```
 
 `--insecure-registry` は `podman pull` に `--tls-verify=false` を付けます。
@@ -325,7 +347,7 @@ to-filesystem --composefs-backend --bootloader=systemd --skip-finalize` で
 sudo ./scripts/install-sealed.sh \
   --image ghcr.io/<owner>/<repo>:latest \
   --disk /dev/nvme0n1 \
-  --mok-cert keys/secureboot.cer
+  --mok-cert certs/secureboot.cer
 ```
 
 > GHCR のパッケージが private の場合は、先に
@@ -393,7 +415,7 @@ sudo ./install-sealed.sh --skip-pull \
 ```
 
 `--skip-pull` はローカル Podman storage のイメージをそのまま使います。
-`keys/secureboot.cer` を VM にコピーしてください（Secure Boot を無効にして
+`certs/secureboot.cer` を VM にコピーしてください（Secure Boot を無効にして
 テストする場合は `--mok-cert` を省略できます）。
 
 > VM 内には `podman`, `systemd-repart`, `cryptsetup`, `e2fsprogs`,
@@ -495,6 +517,10 @@ systemd のドキュメントでも、shim/MOK を使う場合は PCR 7, 11, 14 
 を設定）は UKI に **`.pcrsig` / `.pcrpkey`** を同梱しています。そのため、
 公開鍵ポリシー + PIN を推奨します。実効 PCR は 7+11+14 で、UKI 更新時の
 TPM2 再登録が不要です。
+
+> 署名証明書はリポジトリの `certs/secureboot.crt` をインストール後の
+> システムへコピーして使います。以下ではカレントディレクトリに
+> `secureboot.crt` として置いたものとします。
 
 ```bash
 # デバイス確認（TPM2 / FIDO2）
@@ -807,8 +833,9 @@ tail -c +17 /tmp/vendor.bin > /tmp/vendor.der
 openssl x509 -inform DER -in /tmp/vendor.der -noout -subject -issuer
 ```
 
-> **注意**: `keys/` の鍵はテスト用です。本番では鍵をローテーションし、
-> Secure Boot の db/MOK と `.pcrsig` を新しい鍵で再生成してください。
+> **注意**: `keys/` の秘密鍵はテスト用です。本番では鍵をローテーションし、
+> `certs/` の公開証明書と fingerprint を更新したうえで、Secure Boot の
+> db/MOK と `.pcrsig` を新しい鍵で再生成してください。
 
 ## 7. GitHub Actions self-hosted runner
 
@@ -840,6 +867,8 @@ sudo github-runner-setup \
 
 ## 8. Secure Boot / 署名の確認
 
+リポジトリの `certs/` をインストール先にコピーして実行します。
+
 ```bash
 # Secure Boot の状態
 mokutil --sb-state
@@ -848,7 +877,7 @@ mokutil --sb-state
 mokutil --list-enrolled
 
 # UKI の署名検証
-sbverify --cert keys/secureboot.crt /boot/EFI/Linux/*.efi
+sbverify --cert certs/secureboot.crt /boot/EFI/Linux/*.efi
 
 # systemd-boot の状態
 bootctl status
@@ -953,7 +982,7 @@ autostart = ["noctalia"]
 ```bash
 mokutil --sb-state
 mokutil --list-enrolled
-sbverify --cert secureboot.crt /boot/EFI/Linux/*.efi
+sbverify --cert certs/secureboot.crt /boot/EFI/Linux/*.efi
 bootctl status
 efibootmgr -v
 ```

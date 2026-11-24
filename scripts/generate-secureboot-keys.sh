@@ -28,3 +28,5 @@ echo "Generated:"
 echo "  ${outdir}/secureboot.key (private, keep secret)"
 echo "  ${outdir}/secureboot.crt (PEM certificate)"
 echo "  ${outdir}/secureboot.cer (DER certificate for mokutil)"
+echo
+echo "Run 'make certs' to publish the public certificate to certs/."

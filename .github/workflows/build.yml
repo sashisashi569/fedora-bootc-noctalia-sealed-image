@@ -5,7 +5,9 @@ on:
     branches: [main]
     # Only rebuild when the image content can change. Documentation
     # (README), Makefile, installer-only scripts, top-level repart.d and
-    # keys do not affect the image; use workflow_dispatch for a forced build.
+    # keys do not affect the image. certs/ is verified against the signing
+    # secret, so changes to it trigger a build. Use workflow_dispatch for a
+    # forced build.
     paths:
       - 'Containerfile'
       - '.dockerignore'
@@ -15,6 +17,7 @@ on:
       - 'scripts/rebuild-initramfs.sh'
       - 'scripts/split-kernel.sh'
       - 'scripts/build-uki.sh'
+      - 'certs/**'
       - 'rootfs/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
@@ -90,6 +93,20 @@ jobs:
           fi
           echo "cache_bust=$(sha256sum "$RUNNER_TEMP/secrets/secureboot.crt" | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
 
+      - name: Verify published Secure Boot certificate
+        if: steps.signing.outputs.sign_uki == '1'
+        run: |
+          set -euo pipefail
+          (cd certs && sha256sum -c SHA256SUMS)
+          pem=$(openssl x509 -in certs/secureboot.crt -noout -fingerprint -sha256 | cut -d= -f2)
+          der=$(openssl x509 -inform DER -in certs/secureboot.cer -noout -fingerprint -sha256 | cut -d= -f2)
+          secret=$(openssl x509 -in "$RUNNER_TEMP/secrets/secureboot.crt" -noout -fingerprint -sha256 | cut -d= -f2)
+          if [[ "${pem}" != "${der}" || "${pem}" != "${secret}" ]]; then
+            echo "::error::certs/ does not match the SECUREBOOT_CERT signing secret"
+            exit 1
+          fi
+          echo "Secure Boot certificate fingerprint: ${pem}"
+
       - name: Build
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
@@ -133,7 +150,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: secureboot-certificate
-          path: ${{ runner.temp }}/secrets/secureboot.crt
+          path: |
+            certs/secureboot.cer
+            certs/secureboot.crt
+            certs/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
 

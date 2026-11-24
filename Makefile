@@ -9,7 +9,7 @@ VCONSOLE_KEYMAP ?= us
 KEYS ?= keys
 PODMAN ?= podman
 
-.PHONY: all build build-signed build-unsigned keys shellcheck
+.PHONY: all build build-signed build-unsigned keys certs shellcheck
 
 all: build
 
@@ -54,6 +54,16 @@ build-unsigned:
 keys:
 	@test -s "$(KEYS)/secureboot.key" && test -s "$(KEYS)/secureboot.crt" || \
 		./scripts/generate-secureboot-keys.sh "$(KEYS)"
+
+# Publish the public certificate: copy it from KEYS into certs/ and refresh
+# SHA256SUMS. Run this after rotating keys, then commit certs/.
+certs:
+	@test -s "$(KEYS)/secureboot.crt" && test -s "$(KEYS)/secureboot.cer" || \
+		{ echo "Missing $(KEYS)/secureboot.crt or $(KEYS)/secureboot.cer; run 'make keys'." >&2; exit 1; }
+	install -m 0644 "$(KEYS)/secureboot.crt" certs/secureboot.crt
+	install -m 0644 "$(KEYS)/secureboot.cer" certs/secureboot.cer
+	cd certs && sha256sum secureboot.crt secureboot.cer > SHA256SUMS
+	@openssl x509 -in certs/secureboot.crt -noout -subject -fingerprint -sha256 -dates
 
 shellcheck:
 	shellcheck scripts/*.sh rootfs/usr/libexec/initial-firstboot \

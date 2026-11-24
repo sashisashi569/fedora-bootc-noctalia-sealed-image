@@ -68,7 +68,7 @@ Examples:
   ./scripts/local-registry.sh push localhost/fedora-bootc-noctalia-sealed:latest noctalia-sealed:test
   sudo ./scripts/install-sealed.sh --insecure-registry \
     --image localhost:5000/noctalia-sealed:test \
-    --disk /dev/nvme0n1 --mok-cert keys/secureboot.cer
+    --disk /dev/nvme0n1 --mok-cert certs/secureboot.cer
   # From a VM on the libvirt default network:
   sudo ./scripts/install-sealed.sh --insecure-registry \
     --image 192.168.122.1:5000/noctalia-sealed:test \
@@ -201,7 +201,7 @@ Install it with:
   sudo ./scripts/install-sealed.sh --insecure-registry \\
     --image ${full} \\
     --disk /dev/nvme0n1 \\
-    --mok-cert keys/secureboot.cer
+    --mok-cert certs/secureboot.cer
 EOF
 }
 
