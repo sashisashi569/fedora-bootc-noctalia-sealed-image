@@ -42,6 +42,7 @@ COPY --chmod=0755 scripts/install-github-runner.sh /
 COPY --chmod=0755 scripts/rebuild-initramfs.sh /
 COPY --chmod=0755 scripts/split-kernel.sh /
 COPY --chmod=0755 scripts/build-uki.sh /
+COPY --chmod=0755 scripts/sign-systemd-boot.sh /
 
 # ---------------------------------------------------------------------------
 # 1. Root filesystem
@@ -135,7 +136,39 @@ FROM split AS rootfs-split
 RUN rm -rf /kernel
 
 # ---------------------------------------------------------------------------
-# 4. Build, composefs-seal and sign the UKI
+# 4. Re-sign systemd-boot before the composefs digest is computed
+# ---------------------------------------------------------------------------
+# Fedora 45's shim embeds the Fedora CA 20200709 while systemd-boot 262 is
+# signed by the Fedora CA 20250530. Re-sign the image's systemd-boot with the
+# image key so shim can verify it through MOK. This must happen before the
+# composefs digest is computed, otherwise the UKI would embed a stale digest.
+FROM ${TOOLS_IMAGE} AS boot-sign
+
+RUN dnf install -y sbsigntools binutils && dnf clean all
+
+# Sign the exact systemd-boot binary from the image rootfs, not the tools
+# image's package, so package versions cannot drift.
+COPY --from=rootfs-split /usr/lib/efi/systemd-boot /usr/lib/efi/systemd-boot
+
+ARG SIGN_UKI
+ARG UKI_CACHE_BUST=0
+
+RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
+    UKI_CACHE_BUST="${UKI_CACHE_BUST}" \
+    /build-scripts/sign-systemd-boot.sh
+
+FROM rootfs-split AS rootfs-boot
+COPY --from=boot-sign /out/grubx64.signed /tmp/grubx64.signed
+RUN set -eux; \
+    grub=$(ls -d /usr/lib/efi/systemd-boot/*/EFI/fedora/grubx64.efi | sort -V | tail -n1); \
+    test -n "${grub}"; \
+    install -Dm0644 /tmp/grubx64.signed "${grub}"; \
+    rm -f /tmp/grubx64.signed
+
+# ---------------------------------------------------------------------------
+# 5. Build, composefs-seal and sign the UKI
 # ---------------------------------------------------------------------------
 FROM ${TOOLS_IMAGE} AS sealed-uki
 
@@ -155,7 +188,7 @@ ARG SIGN_UKI
 ARG UKI_CACHE_BUST=0
 
 RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
-    --mount=type=bind,from=rootfs-split,target=/target \
+    --mount=type=bind,from=rootfs-boot,target=/target \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
@@ -163,12 +196,13 @@ RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
     /build-scripts/build-uki.sh
 
 # ---------------------------------------------------------------------------
-# 5. Final sealed image
+# 6. Final sealed image
 # ---------------------------------------------------------------------------
-FROM rootfs-split AS final
+FROM rootfs-boot AS final
 
 # /boot is not part of the composefs root, so adding the UKI here does not
-# change the digest that was embedded in it.
+# change the digest that was embedded in it. The re-signed systemd-boot is
+# already part of rootfs-boot, before the digest was computed.
 COPY --from=sealed-uki /out/*.efi /boot/EFI/Linux/
 
 LABEL org.opencontainers.image.title="Fedora bootc Noctalia Sealed"

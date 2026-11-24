@@ -754,8 +754,14 @@ Fedora 45 の `shim-x64-16.1-7` は vendor cert に
 Secure Boot 有効時は shim が systemd-boot を検証できず、
 `Verification failed: (0x1A) Security Violation` で停止します。
 
-テストでは、systemd-boot を UKI と同じテスト鍵で再署名し、
-MOK に同じ証明書を登録してチェーンを成立させました。
+**修正済み（署名付きビルド）**: `SIGN_UKI=1` のビルドは
+`scripts/build-uki.sh` が systemd-boot も UKI と同じ鍵で再署名し、
+最終イメージの `/usr/lib/efi/systemd-boot/.../grubx64.efi` に配置します。
+インストーラはその再署名済み systemd-boot を ESP にコピーし、
+`--mok-cert` で同じ証明書を MOK に登録するため、shim は MOK 経由で
+systemd-boot と UKI の両方を検証できます。
+
+**旧イメージ / 復旧時の手動ワークアラウンド**:
 
 ```bash
 # 既存署名を削除してテスト鍵で再署名
@@ -767,6 +773,32 @@ sbsign --key keys/secureboot.key --cert keys/secureboot.crt \
 cp /tmp/grubx64.signed.efi /boot/EFI/fedora/grubx64.efi
 cp /tmp/grubx64.signed.efi /boot/EFI/BOOT/grubx64.efi
 ```
+
+`--mok-cert` には **イメージの署名に使った証明書**（CI の
+`SECUREBOOT_CERT`）を指定してください。別の証明書を指定すると
+systemd-boot / UKI の署名と一致せず、MOK 経由でも検証できません。
+
+#### 修正: vfat ESP のハードリンクとブートエントリ検証
+
+旧インストーラは shim を `cp -a` で ESP にコピーしていたため、vfat が
+ハードリンクをサポートせず
+
+```text
+cp: cannot create hard link ... Operation not permitted
+```
+
+で停止し、`efibootmgr --create` に到達しませんでした。その結果、
+`Fedora Noctalia Sealed` の UEFI ブートエントリが作られず、
+ファームウェアのフォールバック起動（`\EFI\BOOT\BOOTX64.EFI` →
+`grubx64.efi`）で Secure Boot Violation になっていました。
+
+修正:
+
+- `cp -a --no-preserve=links` で shim をコピーする。
+- `efibootmgr --create` の後に `efibootmgr` を読み直し、
+  `Fedora Noctalia Sealed` が存在しなければエラーで停止する。
+
+実機で再インストールする場合は、修正後のイメージ / スクリプトを使ってください。
 
 代替案:
 

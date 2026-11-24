@@ -177,8 +177,12 @@ podman run --rm --security-opt label=type:unconfined_t \
     shimdir=$(ls -d /usr/lib/efi/shim/* | sort -V | tail -n1)
     signed_grub=$(ls -d /usr/lib/efi/systemd-boot/*/EFI/fedora/grubx64.efi | sort -V | tail -n1)
     install -d /mnt/boot/EFI/fedora /mnt/boot/EFI/BOOT
-    cp -a "${shimdir}/EFI/fedora/." /mnt/boot/EFI/fedora/
-    cp -a "${shimdir}/EFI/BOOT/." /mnt/boot/EFI/BOOT/
+    # vfat does not support hard links. The shim package contains
+    # shim.efi/shimx64.efi as hard links, so plain `cp -a` fails with
+    # "cannot create hard link ... Operation not permitted" on the ESP and
+    # aborts the installer before the UEFI boot entry is created.
+    cp -a --no-preserve=links "${shimdir}/EFI/fedora/." /mnt/boot/EFI/fedora/
+    cp -a --no-preserve=links "${shimdir}/EFI/BOOT/." /mnt/boot/EFI/BOOT/
     install -Dm0644 "${shimdir}/EFI/fedora/mmx64.efi" /mnt/boot/EFI/BOOT/mmx64.efi
     install -Dm0644 /mnt/boot/EFI/systemd/systemd-bootx64.efi /mnt/boot/EFI/fedora/grubx64.efi
     install -Dm0644 /mnt/boot/EFI/systemd/systemd-bootx64.efi /mnt/boot/EFI/BOOT/grubx64.efi
@@ -199,11 +203,17 @@ efibootmgr --create --disk "${DISK}" --part 1 \
     --loader '\EFI\fedora\shimx64.efi'
 
 newnum=$(efibootmgr | awk '/Fedora Noctalia Sealed/ {gsub(/Boot/,"",$1); gsub(/\*/,"",$1); print $1; exit}')
-if [[ -n "${newnum}" ]]; then
-    order=$(efibootmgr | awk '/^BootOrder:/ {print $2}')
-    order=$(printf '%s' "${order}" | tr ',' '\n' | grep -vx "${newnum}" | paste -sd, -)
-    efibootmgr -o "${newnum},${order}"
+if [[ -z "${newnum}" ]]; then
+    echo "Failed to create the UEFI boot entry 'Fedora Noctalia Sealed'." >&2
+    echo "Some firmware silently ignores efibootmgr writes; check the" >&2
+    echo "firmware's NVRAM/CSM settings and the output below." >&2
+    efibootmgr >&2 || true
+    exit 1
 fi
+
+order=$(efibootmgr | awk '/^BootOrder:/ {print $2}')
+order=$(printf '%s' "${order}" | tr ',' '\n' | grep -vx "${newnum}" | paste -sd, -)
+efibootmgr -o "${newnum},${order}"
 
 if [[ -n "${MOK_CERT}" ]]; then
     command -v mokutil >/dev/null || { echo "Missing required tool: mokutil" >&2; exit 1; }
