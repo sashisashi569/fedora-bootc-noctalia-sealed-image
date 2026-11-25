@@ -13,14 +13,24 @@
 #   --secret id=secureboot_key,src=secureboot.key
 #   --secret id=secureboot_cert,src=secureboot.crt
 #
+# UKI_CACHE_BUST must change whenever the signing key changes: BuildKit does
+# not include secret contents in the layer cache key. The Makefile and CI set
+# it to the SHA256 of the certificate.
+#
 # Example (chunkah's FROM oci:out flow requires Podman/Buildah):
 #   podman build \
 #     --skip-unused-stages=false --security-opt=label=disable \
 #     -v "$PWD:/run/src" \
 #     --build-arg SIGN_UKI=1 \
+#     --build-arg INSTALL_NVIDIA_OPEN=0 \
+#     --build-arg UKI_CACHE_BUST="$(sha256sum keys/secureboot.crt | cut -d' ' -f1)" \
 #     --secret id=secureboot_key,src=keys/secureboot.key \
 #     --secret id=secureboot_cert,src=keys/secureboot.crt \
 #     -t localhost/fedora-bootc-noctalia-sealed .
+#
+# INSTALL_NVIDIA_OPEN=1 adds RPM Fusion's NVIDIA open kernel module (built with
+# akmod-nvidia) and the matching user-space driver. The module is signed with
+# the same key as the UKI.
 
 ARG BASE_IMAGE=quay.io/fedora/fedora-bootc:45
 ARG TOOLS_IMAGE=registry.fedoraproject.org/fedora:45
@@ -29,6 +39,7 @@ ARG INSTALL_GITHUB_RUNNER=1
 ARG RUNNER_VERSION=2.338.2
 ARG RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
 ARG SIGN_UKI=0
+ARG INSTALL_NVIDIA_OPEN=0
 ARG VCONSOLE_KEYMAP=us
 
 # The build helper scripts are only mounted into the build; they are not
@@ -37,6 +48,7 @@ ARG VCONSOLE_KEYMAP=us
 # the container build cache.
 FROM scratch AS scripts
 COPY --chmod=0755 scripts/install-packages.sh /
+COPY --chmod=0755 scripts/install-nvidia-open.sh /
 COPY --chmod=0755 scripts/configure-system.sh /
 COPY --chmod=0755 scripts/install-github-runner.sh /
 COPY --chmod=0755 scripts/rebuild-initramfs.sh /
@@ -51,8 +63,10 @@ FROM ${BASE_IMAGE} AS rootfs
 
 ARG FEDORA_RELEASE
 ARG INSTALL_GITHUB_RUNNER
+ARG INSTALL_NVIDIA_OPEN
 ARG RUNNER_VERSION
 ARG RUNNER_SHA256
+ARG UKI_CACHE_BUST=0
 ARG VCONSOLE_KEYMAP
 
 # Install the requested packages, remove server-oriented daemons that are not
@@ -62,6 +76,24 @@ RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
     --mount=type=tmpfs,target=/run \
     --mount=type=tmpfs,target=/tmp \
     /build-scripts/install-packages.sh
+
+# Optional NVIDIA variant. RPM Fusion's akmod-nvidia is built as NVIDIA's open
+# kernel module for the image kernel, and the module is signed with the same
+# Secure Boot / MOK key as the UKI when SIGN_UKI=1. This stage needs the
+# signing secrets only when enabled; the Makefile and CI always provide them.
+# akmods compiles as the unprivileged `akmods` user; install-nvidia-open.sh
+# sets the writable permissions that the RUN tmpfs mounts need.
+RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
+    --mount=type=tmpfs,target=/var \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=tmpfs,target=/tmp \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
+    if [ "${INSTALL_NVIDIA_OPEN}" = "1" ]; then \
+        FEDORA_RELEASE="${FEDORA_RELEASE}" \
+        UKI_CACHE_BUST="${UKI_CACHE_BUST}" \
+        /build-scripts/install-nvidia-open.sh; \
+    fi
 
 # Configuration files, first-boot TUI, systemd units, skel, flatpak remotes.
 COPY rootfs/ /
@@ -185,6 +217,7 @@ RUN dnf install -y \
 # Keep these ARGs after the dnf layer so changing the signing key does not
 # invalidate the tools installation.
 ARG SIGN_UKI
+ARG INSTALL_NVIDIA_OPEN
 ARG UKI_CACHE_BUST=0
 
 RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
@@ -192,6 +225,7 @@ RUN --mount=type=bind,from=scripts,source=/,target=/build-scripts \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
+    INSTALL_NVIDIA_OPEN="${INSTALL_NVIDIA_OPEN}" \
     UKI_CACHE_BUST="${UKI_CACHE_BUST}" \
     /build-scripts/build-uki.sh
 

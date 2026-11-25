@@ -12,6 +12,7 @@ on:
       - 'Containerfile'
       - '.dockerignore'
       - 'scripts/install-packages.sh'
+      - 'scripts/install-nvidia-open.sh'
       - 'scripts/configure-system.sh'
       - 'scripts/install-github-runner.sh'
       - 'scripts/rebuild-initramfs.sh'
@@ -49,7 +50,20 @@ env:
 
 jobs:
   build:
+    name: Build (${{ matrix.variant }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: default
+            image_suffix: ""
+            install_nvidia_open: "0"
+          - variant: nvidia-open
+            image_suffix: "-nvidia-open"
+            install_nvidia_open: "1"
+    env:
+      INSTALL_NVIDIA_OPEN: ${{ matrix.install_nvidia_open }}
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -101,7 +115,7 @@ jobs:
           pem=$(openssl x509 -in certs/secureboot.crt -noout -fingerprint -sha256 | cut -d= -f2)
           der=$(openssl x509 -inform DER -in certs/secureboot.cer -noout -fingerprint -sha256 | cut -d= -f2)
           secret=$(openssl x509 -in "$RUNNER_TEMP/secrets/secureboot.crt" -noout -fingerprint -sha256 | cut -d= -f2)
-          if [[ "${pem}" != "${der}" || "${pem}" != "${secret}" ]]; then
+          if [[ "${pem}" != "${der}" ]] || [[ "${pem}" != "${secret}" ]]; then
             echo "::error::certs/ does not match the SECUREBOOT_CERT signing secret"
             exit 1
           fi
@@ -109,7 +123,7 @@ jobs:
 
       - name: Build
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}${{ matrix.image_suffix }}
         run: |
           set -euxo pipefail
           # chunkah's `FROM oci:out` flow is Podman/Buildah specific. The
@@ -126,6 +140,7 @@ jobs:
             --build-arg SIGN_UKI="${{ steps.signing.outputs.sign_uki }}" \
             --build-arg UKI_CACHE_BUST="${{ steps.signing.outputs.cache_bust }}" \
             --build-arg INSTALL_GITHUB_RUNNER="${INSTALL_GITHUB_RUNNER}" \
+            --build-arg INSTALL_NVIDIA_OPEN="${INSTALL_NVIDIA_OPEN}" \
             --secret id=secureboot_key,src="$RUNNER_TEMP/secrets/secureboot.key" \
             --secret id=secureboot_cert,src="$RUNNER_TEMP/secrets/secureboot.crt" \
             --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
@@ -138,15 +153,24 @@ jobs:
 
       - name: Push
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}${{ matrix.image_suffix }}
         run: |
           set -euxo pipefail
-          sudo -E podman push "${IMAGE}:latest"
+          digestfile="${RUNNER_TEMP}/image.digest"
+          sudo -E podman push --digestfile "${digestfile}" "${IMAGE}:latest"
           sudo -E podman push "${IMAGE}:fedora45"
           sudo -E podman push "${IMAGE}:${GITHUB_SHA}"
 
+          # Content-addressed tag. Tag names cannot contain ':', so the
+          # digest is used without the "sha256:" prefix.
+          digest=$(sudo cat "${digestfile}")
+          digest_hex=${digest#*:}
+          sudo -E podman tag "${IMAGE}:latest" "${IMAGE}:${digest_hex}"
+          sudo -E podman push "${IMAGE}:${digest_hex}"
+          echo "Pushed \`${IMAGE}:${digest_hex}\`" >>"$GITHUB_STEP_SUMMARY"
+
       - name: Upload public Secure Boot certificate
-        if: steps.signing.outputs.sign_uki == '1'
+        if: steps.signing.outputs.sign_uki == '1' && matrix.variant == 'default'
         uses: actions/upload-artifact@v4
         with:
           name: secureboot-certificate
@@ -156,9 +180,3 @@ jobs:
             certs/SHA256SUMS
           if-no-files-found: error
           retention-days: 90
-
-      - name: Publish image digest
-        run: |
-          set -euxo pipefail
-          sudo -E skopeo inspect --format '{{.Digest}}' \
-            "docker://${REGISTRY}/${GITHUB_REPOSITORY,,}:latest"

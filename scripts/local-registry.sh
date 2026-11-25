@@ -8,7 +8,7 @@
 # Usage:
 #   ./scripts/local-registry.sh start
 #   BIND_ADDR=192.168.122.1 ./scripts/local-registry.sh start
-#   ./scripts/local-registry.sh push localhost/fedora-bootc-noctalia-sealed:latest noctalia-sealed:test
+#   ./scripts/local-registry.sh push localhost/fedora-bootc-noctalia-sealed-image:latest noctalia-sealed:test
 #   ./scripts/local-registry.sh list
 #   ./scripts/local-registry.sh stop
 #
@@ -65,7 +65,7 @@ Environment:
 Examples:
   ./scripts/local-registry.sh start
   BIND_ADDR=192.168.122.1 ./scripts/local-registry.sh start
-  ./scripts/local-registry.sh push localhost/fedora-bootc-noctalia-sealed:latest noctalia-sealed:test
+  ./scripts/local-registry.sh push localhost/fedora-bootc-noctalia-sealed-image:latest noctalia-sealed:test
   sudo ./scripts/install-sealed.sh --insecure-registry \
     --image localhost:5000/noctalia-sealed:test \
     --disk /dev/nvme0n1 --mok-cert certs/secureboot.cer

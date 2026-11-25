@@ -30,7 +30,15 @@ fi
 # a V1 composefs repository. The manual flow is the same one used by the
 # Fedora sealed-image reference builds.
 digest=$(bootc container compute-composefs-digest /target)
-printf 'composefs=%s rw quiet rhgb loglevel=3 systemd.show_status=0\n' "${digest}" >/tmp/cmdline
+cmdline="composefs=${digest} rw quiet rhgb loglevel=3 systemd.show_status=0"
+if [[ "${INSTALL_NVIDIA_OPEN:-0}" == "1" ]]; then
+    # Keep nouveau/nova_core from binding the GPU before the out-of-tree NVIDIA
+    # modules load. These modules are intentionally not in the initramfs.
+    cmdline+=" rd.driver.blacklist=nouveau,nova_core"
+    cmdline+=" modprobe.blacklist=nouveau,nova_core"
+    cmdline+=" nvidia-drm.modeset=1"
+fi
+printf '%s\n' "${cmdline}" >/tmp/cmdline
 
 if [[ "${SIGN_UKI}" == "1" ]]; then
     # 1. Build a base UKI with the public key (.pcrpkey) and obtain the PCR

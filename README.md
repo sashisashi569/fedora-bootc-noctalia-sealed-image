@@ -100,6 +100,40 @@ Mozc の設定やキー割り当ては `fcitx5-configtool` で変更できます
 `autostart = ["fcitx5 -d", "noctalia"]` により fcitx5 と Noctalia Shell が
 起動します。
 
+### NVIDIA open kernel module（任意バリアント）
+
+`INSTALL_NVIDIA_OPEN=1` でビルドすると、RPM Fusion Nonfree の
+`akmod-nvidia` を導入し、イメージのカーネル向けに NVIDIA の **open GPU
+kernel module** をコンパイルします。Turing 以降の GPU が対象です。
+
+- モジュールは `/usr/lib/modules/<kver>/extra/nvidia/` に組み込まれ、
+  sealed な root filesystem（composefs）に含まれます。
+- ビルド時に `_with_kmod_nvidia_open` を指定して open 実装に固定します。
+  `modinfo -F license nvidia` は `Dual MIT/GPL` になります。
+- `SIGN_UKI=1` のときは UKI と同じ `keys/secureboot.key` / `.crt` で
+  モジュールも署名します。`certs/secureboot.cer` を MOK 登録済みなら、
+  追加の鍵登録は不要です。unsigned ビルドではモジュールも未署名です。
+- `nouveau` / `nova_core` は UKI の kernel cmdline と modprobe 設定で
+  blacklist します。NVIDIA モジュールは RPM Fusion の dracut 設定に従い
+  initramfs には入れず、root マウント後に読み込みます。
+- ユーザー空間のドライバ（`xorg-x11-drv-nvidia*`）は proprietary のままです。
+  "open" はカーネルモジュールのみを指します。
+- `akmods` / `kernel-devel` / コンパイラもイメージに残るため、通常イメージ
+  より大きくなります（カーネル更新時のモジュール再ビルド用）。
+
+起動後の確認:
+
+```bash
+modinfo -F license nvidia   # Dual MIT/GPL
+modinfo -F signer nvidia    # 署名時は Fedora bootc Noctalia Secure Boot
+lsmod | grep -E '^nvidia'
+cat /sys/module/nvidia_drm/parameters/modeset   # Y
+```
+
+`nvidia-smi` は `xorg-x11-drv-nvidia-cuda` に含まれます。このイメージは
+カーネルモジュールと表示用ドライバのみを入れており、CUDA ツールキットは
+含めていません。
+
 ### ブート / FDE
 
 - `systemd-boot-x64`（Fedora 署名済み systemd-boot）
@@ -144,6 +178,7 @@ certs/                        公開 Secure Boot / MOK 証明書（コミット�
 keys/                         秘密鍵とローカル用証明書（.gitignore）
 scripts/
   install-packages.sh         dnf install / remove
+  install-nvidia-open.sh      NVIDIA open kernel module（任意）
   configure-system.sh         user, systemd, authselect, keymap
   install-github-runner.sh    actions/runner の配置
   rebuild-initramfs.sh        dracut で initramfs 再生成
@@ -182,9 +217,17 @@ make build-signed
 # 署名なし（Secure Boot では UKI を信頼しない。検証用）
 make build-unsigned
 
+# NVIDIA open kernel module 入り（署名なし / 署名付き）
+make build-nvidia
+make build-nvidia-signed
+
 # コンテナ内で UKI を確認
-podman run --rm localhost/fedora-bootc-noctalia-sealed:latest \
+podman run --rm localhost/fedora-bootc-noctalia-sealed-image:latest \
   bash -c 'ls -lh /boot/EFI/Linux/ && bootc --version'
+
+# NVIDIA モジュールの確認（署名付きビルドの例）
+podman run --rm localhost/fedora-bootc-noctalia-sealed-image-nvidia-open:latest \
+  bash -c 'modinfo -F license nvidia; modinfo -F signer nvidia'
 ```
 
 > NixOS などで `podman` / `make` / `openssl` が PATH にない場合は、
@@ -204,10 +247,14 @@ podman run --rm localhost/fedora-bootc-noctalia-sealed:latest \
 | `BASE_IMAGE` | `quay.io/fedora/fedora-bootc:45` | ベース |
 | `FEDORA_RELEASE` | `45` | Terra などのリポジトリ選択用 |
 | `SIGN_UKI` | `0` | `1` で UKI を署名 |
+| `INSTALL_NVIDIA_OPEN` | `0` | `1` で NVIDIA open kernel module 入りイメージをビルド |
 | `INSTALL_GITHUB_RUNNER` | `1` | `0` で runner payload を除外 |
 | `VCONSOLE_KEYMAP` | `us` | LUKS 解錠プロンプト用のコンソール keymap |
 | `RUNNER_VERSION` | `2.338.2` | actions/runner |
 | `RUNNER_SHA256` | 固定値 | runner tarball の検証用 |
+
+NVIDIA バリアントのローカルタグは `NVIDIA_IMAGE` で変更できます（既定:
+`localhost/fedora-bootc-noctalia-sealed-image-nvidia-open:latest`）。
 
 ### GitHub Actions
 
@@ -269,7 +316,9 @@ gh secret list
 | `SECUREBOOT_KEY` | `keys/secureboot.key` の中身（PEM 秘密鍵） |
 | `SECUREBOOT_CERT` | `keys/secureboot.crt` の中身（PEM 証明書） |
 
-`SECUREBOOT_CERT` は `certs/secureboot.crt` と同一にしてください。
+同じ鍵は UKI だけでなく `-nvidia-open` バリアントの NVIDIA カーネル
+モジュールの署名にも使われます。`SECUREBOOT_CERT` は
+`certs/secureboot.crt` と同一にしてください。
 ワークフローは両者の SHA256 fingerprint を比較し、不一致ならビルドを
 失敗させます。公開証明書を更新したときは、secret も同じ証明書に更新します。
 
@@ -293,9 +342,29 @@ gh run watch
 ghcr.io/<owner>/<repo>:latest
 ghcr.io/<owner>/<repo>:fedora45
 ghcr.io/<owner>/<repo>:<commit-sha>
+ghcr.io/<owner>/<repo>:<digest>
+
+ghcr.io/<owner>/<repo>-nvidia-open:latest
+ghcr.io/<owner>/<repo>-nvidia-open:fedora45
+ghcr.io/<owner>/<repo>-nvidia-open:<commit-sha>
+ghcr.io/<owner>/<repo>-nvidia-open:<digest>
 ```
 
-に push されます。GHCR のパッケージは初回 push で自動作成されます。
+に push されます。既定バリアントは従来どおり `-nvidia-open` なしの
+パッケージ名です。`-nvidia-open` は `INSTALL_NVIDIA_OPEN=1` の
+NVIDIA バリアントで、別の GHCR パッケージになります。`<digest>` は
+`sha256:` を除いた 16 進数のイメージダイジェストで、内容が変わらない
+イミュータブルなタグとして使えます。
+
+```text
+例: ghcr.io/<owner>/<repo>-nvidia-open:9f2c...
+```
+
+タグだけでなく、通常の OCI ダイジェスト参照
+`ghcr.io/<owner>/<repo>-nvidia-open@sha256:<digest>` でも固定できます。
+
+GHCR のパッケージは初回 push で自動作成されます。パッケージごとに
+可視性（public/private）を設定してください。
 
 公開 Secure Boot / MOK 証明書はリポジトリの `certs/` にコミットされています。
 
@@ -327,7 +396,7 @@ HTTP の OCI レジストリを立てて、ビルドしたイメージを
 
 # ビルド済みイメージを push（TARGET を省略すると元の名前:タグを使う）
 ./scripts/local-registry.sh push \
-  localhost/fedora-bootc-noctalia-sealed:latest \
+  localhost/fedora-bootc-noctalia-sealed-image:latest \
   noctalia-sealed:test
 
 # 内容確認
@@ -373,6 +442,25 @@ to-filesystem --composefs-backend --bootloader=systemd --skip-finalize` で
 ```bash
 sudo ./scripts/install-sealed.sh \
   --image ghcr.io/<owner>/<repo>:latest \
+  --disk /dev/nvme0n1 \
+  --mok-cert certs/secureboot.cer
+```
+
+NVIDIA GPU 機では `-nvidia-open` パッケージを使います。モジュールは UKI と
+同じ鍵で署名されているため、MOK 証明書は通常イメージと同じです。
+
+```bash
+sudo ./scripts/install-sealed.sh \
+  --image ghcr.io/<owner>/<repo>-nvidia-open:latest \
+  --disk /dev/nvme0n1 \
+  --mok-cert certs/secureboot.cer
+```
+
+ダイジェスト固定でインストールする場合:
+
+```bash
+sudo ./scripts/install-sealed.sh \
+  --image ghcr.io/<owner>/<repo>-nvidia-open:<digest> \
   --disk /dev/nvme0n1 \
   --mok-cert certs/secureboot.cer
 ```

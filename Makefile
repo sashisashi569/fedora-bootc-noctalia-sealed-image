@@ -1,15 +1,19 @@
 # Convenience wrapper around the Containerfile.
 
-IMAGE ?= localhost/fedora-bootc-noctalia-sealed:latest
+IMAGE_NAME ?= localhost/fedora-bootc-noctalia-sealed-image
+IMAGE ?= $(IMAGE_NAME):latest
+NVIDIA_IMAGE ?= $(IMAGE_NAME)-nvidia-open:latest
 BASE_IMAGE ?= quay.io/fedora/fedora-bootc:45
 FEDORA_RELEASE ?= 45
 SIGN_UKI ?= 0
 INSTALL_GITHUB_RUNNER ?= 1
+INSTALL_NVIDIA_OPEN ?= 0
 VCONSOLE_KEYMAP ?= us
 KEYS ?= keys
 PODMAN ?= podman
 
-.PHONY: all build build-signed build-unsigned keys certs shellcheck
+.PHONY: all build build-signed build-unsigned build-nvidia build-nvidia-signed \
+	build-nvidia-unsigned keys certs shellcheck
 
 all: build
 
@@ -38,6 +42,7 @@ build:
 		--build-arg SIGN_UKI="$(SIGN_UKI)" \
 		--build-arg UKI_CACHE_BUST="$$cache_bust" \
 		--build-arg INSTALL_GITHUB_RUNNER="$(INSTALL_GITHUB_RUNNER)" \
+		--build-arg INSTALL_NVIDIA_OPEN="$(INSTALL_NVIDIA_OPEN)" \
 		--build-arg VCONSOLE_KEYMAP="$(VCONSOLE_KEYMAP)" \
 		--secret id=secureboot_key,src="$$secret_dir/secureboot.key" \
 		--secret id=secureboot_cert,src="$$secret_dir/secureboot.crt" \
@@ -50,6 +55,16 @@ build-signed: keys
 
 build-unsigned:
 	$(MAKE) build SIGN_UKI=0
+
+# NVIDIA variant: RPM Fusion's akmod-nvidia built as the open kernel module.
+build-nvidia:
+	$(MAKE) build INSTALL_NVIDIA_OPEN=1 IMAGE="$(NVIDIA_IMAGE)"
+
+build-nvidia-signed: keys
+	$(MAKE) build INSTALL_NVIDIA_OPEN=1 SIGN_UKI=1 IMAGE="$(NVIDIA_IMAGE)"
+
+build-nvidia-unsigned:
+	$(MAKE) build INSTALL_NVIDIA_OPEN=1 SIGN_UKI=0 IMAGE="$(NVIDIA_IMAGE)"
 
 keys:
 	@test -s "$(KEYS)/secureboot.key" && test -s "$(KEYS)/secureboot.crt" || \

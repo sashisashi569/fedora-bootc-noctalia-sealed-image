@@ -1,9 +1,11 @@
 # Secure Boot / MOK 公開証明書
 
-このディレクトリには、GHCR で配布する sealed image の UKI を署名する
+このディレクトリには、GHCR で配布する sealed image の UKI（および
+`-nvidia-open` バリアントの NVIDIA open kernel module）を署名する
 **公開証明書**を置いています。秘密鍵は含まれません。
 
 - イメージの利用者は、初回インストール時にこの証明書を MOK へ登録します。
+  同じ MOK 登録で UKI と NVIDIA カーネルモジュールの両方を検証できます。
 - 証明書は公開情報です。**秘密鍵（`../keys/secureboot.key`）は絶対に
   コミットしないでください。**
 - リポジトリのこのディレクトリを正（canonical）とし、Actions の artifact
@@ -71,6 +73,14 @@ sudo ./scripts/install-sealed.sh \
 
 ```bash
 sudo sbverify --cert certs/secureboot.crt /boot/EFI/Linux/*.efi
+```
+
+`-nvidia-open` バリアントでは、NVIDIA カーネルモジュールも同じ証明書で
+署名されています。
+
+```bash
+modinfo -F signer nvidia
+# Fedora bootc Noctalia Secure Boot
 ```
 
 ## 鍵ローテーション

@@ -8,7 +8,7 @@
 #
 # Example:
 #   sudo ./scripts/install-sealed.sh \
-#     --image ghcr.io/owner/fedora-bootc-noctalia-sealed:latest \
+#     --image ghcr.io/owner/fedora-bootc-noctalia-sealed-image:latest \
 #     --disk /dev/nvme0n1 \
 #     --mok-cert certs/secureboot.cer
 set -euo pipefail
